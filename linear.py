@@ -4,6 +4,7 @@
 Интерфейс: tkinter + matplotlib.
 Возможность редактирования изделий двойным кликом.
 Прокрутка визуализации колёсиком мыши.
+Умные подписи: если название не помещается — показывается #номер.
 """
 
 import tkinter as tk
@@ -20,11 +21,11 @@ def ffd_cutting(stock_length, parts):
     pieces = []
     for p in parts:
         for _ in range(p["qty"]):
-            pieces.append((p["name"], p["length"]))
+            pieces.append((p["name"], p["length"], p["id"]))
 
     oversized = [p for p in pieces if p[1] > stock_length]
     if oversized:
-        names = set(f"«{n}» ({l} мм)" for n, l in oversized)
+        names = set(f"«{n}» ({l} мм)" for n, l, _ in oversized)
         raise ValueError(
             f"Изделия длиннее заготовки ({stock_length} мм):\n"
             + "\n".join(f"  • {n}" for n in names)
@@ -33,18 +34,18 @@ def ffd_cutting(stock_length, parts):
     pieces.sort(key=lambda x: x[1], reverse=True)
     bins = []
 
-    for piece_name, piece_len in pieces:
+    for piece_name, piece_len, piece_id in pieces:
         placed = False
         for b in bins:
             if b["remaining"] >= piece_len:
-                b["pieces"].append((piece_name, piece_len))
+                b["pieces"].append((piece_name, piece_len, piece_id))
                 b["remaining"] -= piece_len
                 placed = True
                 break
         if not placed:
             bins.append({
                 "remaining": stock_length - piece_len,
-                "pieces": [(piece_name, piece_len)],
+                "pieces": [(piece_name, piece_len, piece_id)],
             })
     return bins
 
@@ -130,19 +131,17 @@ class EditPartDialog(tk.Toplevel):
 class ScrollableChart(ttk.Frame):
     """
     Фрейм с matplotlib-графиком внутри прокручиваемой области.
-    Каждая заготовка имеет фиксированную высоту, а при большом
-    количестве заготовок появляется вертикальная прокрутка.
+    Каждая заготовка имеет фиксированную высоту.
     """
 
-    ROW_HEIGHT_PX = 60       # высота одной заготовки в пикселях
-    PADDING_TOP_PX = 80      # место под заголовок и легенду
-    PADDING_BOTTOM_PX = 40   # место под ось X
+    ROW_HEIGHT_PX = 60
+    PADDING_TOP_PX = 80
+    PADDING_BOTTOM_PX = 40
     DPI = 100
 
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
 
-        # Canvas tkinter для прокрутки
         self.tk_canvas = tk.Canvas(self, bg="#fafafa", highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tk_canvas.yview)
         self.tk_canvas.configure(yscrollcommand=self.scrollbar.set)
@@ -150,21 +149,16 @@ class ScrollableChart(ttk.Frame):
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.tk_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Внутренний фрейм
         self.inner_frame = ttk.Frame(self.tk_canvas)
         self.window_id = self.tk_canvas.create_window(
             (0, 0), window=self.inner_frame, anchor=tk.NW
         )
 
-        # matplotlib Figure и Canvas (будут созданы при отрисовке)
         self.fig = None
         self.mpl_canvas = None
 
-        # Прокрутка колёсиком
         self.tk_canvas.bind("<Enter>", self._bind_mousewheel)
         self.tk_canvas.bind("<Leave>", self._unbind_mousewheel)
-
-        # Подгонка ширины при ресайзе
         self.tk_canvas.bind("<Configure>", self._on_canvas_configure)
         self.inner_frame.bind("<Configure>", self._on_frame_configure)
 
@@ -174,7 +168,6 @@ class ScrollableChart(ttk.Frame):
     def _on_canvas_configure(self, event=None):
         width = self.tk_canvas.winfo_width()
         self.tk_canvas.itemconfig(self.window_id, width=width)
-        # Если уже есть график — перерисуем с новой шириной
         if self.fig and self.mpl_canvas:
             fig_w = width / self.DPI
             fig_h = self.fig.get_figheight()
@@ -186,9 +179,9 @@ class ScrollableChart(ttk.Frame):
             self._on_frame_configure()
 
     def _bind_mousewheel(self, event=None):
-        self.tk_canvas.bind_all("<MouseWheel>", self._on_mousewheel)           # Windows/macOS
-        self.tk_canvas.bind_all("<Button-4>", self._on_mousewheel_linux)       # Linux scroll up
-        self.tk_canvas.bind_all("<Button-5>", self._on_mousewheel_linux)       # Linux scroll down
+        self.tk_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.tk_canvas.bind_all("<Button-4>", self._on_mousewheel_linux)
+        self.tk_canvas.bind_all("<Button-5>", self._on_mousewheel_linux)
 
     def _unbind_mousewheel(self, event=None):
         self.tk_canvas.unbind_all("<MouseWheel>")
@@ -196,7 +189,6 @@ class ScrollableChart(ttk.Frame):
         self.tk_canvas.unbind_all("<Button-5>")
 
     def _on_mousewheel(self, event):
-        # Windows: event.delta = ±120, macOS: ±1
         if abs(event.delta) >= 120:
             self.tk_canvas.yview_scroll(-event.delta // 120, "units")
         else:
@@ -209,7 +201,6 @@ class ScrollableChart(ttk.Frame):
             self.tk_canvas.yview_scroll(3, "units")
 
     def clear(self):
-        """Удалить текущий график."""
         if self.mpl_canvas:
             self.mpl_canvas.get_tk_widget().destroy()
             self.mpl_canvas = None
@@ -218,13 +209,23 @@ class ScrollableChart(ttk.Frame):
             plt.close(self.fig)
             self.fig = None
 
+    def _get_text_width(self, ax, text, fontsize):
+        """Вычисляет ширину текста в единицах данных оси X."""
+        from matplotlib.text import Text
+        renderer = self.fig.canvas.get_renderer()
+        t = Text(0, 0, text, fontsize=fontsize, fontweight="bold", figure=self.fig)
+        bb = t.get_window_extent(renderer=renderer)
+        # Переводим пиксели в единицы данных
+        inv = ax.transData.inverted()
+        p0 = inv.transform((0, 0))
+        p1 = inv.transform((bb.width, 0))
+        return p1[0] - p0[0]
+
     def draw(self, material_name, stock_length, bins):
         """Отрисовать карту раскроя с фиксированной высотой строк."""
         self.clear()
 
         n = len(bins)
-
-        # Вычисляем размер фигуры
         canvas_width = max(self.tk_canvas.winfo_width(), 600)
         fig_w = canvas_width / self.DPI
         fig_h_px = self.PADDING_TOP_PX + n * self.ROW_HEIGHT_PX + self.PADDING_BOTTOM_PX
@@ -246,10 +247,27 @@ class ScrollableChart(ttk.Frame):
         ]
         color_idx = 0
 
+        # Настраиваем оси ДО отрисовки текста (нужно для расчёта ширины)
+        ax.set_xlim(-stock_length * 0.07, stock_length * 1.05)
+        ax.set_ylim(-0.8, n - 0.2 + 0.8)
+        ax.set_xlabel("Длина (мм)", fontsize=10)
+        ax.set_yticks([])
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+
+        self.fig.tight_layout()
+
+        # Нужен предварительный рендер, чтобы renderer существовал
+        self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=self.inner_frame)
+        self.mpl_canvas.draw()
+
+        # Собираем все тексты для отложенной отрисовки
+        text_items = []
+
         for i, b in enumerate(bins):
             y = n - 1 - i
 
-            # Фон заготовки
             ax.add_patch(patches.FancyBboxPatch(
                 (0, y - bar_height / 2), stock_length, bar_height,
                 boxstyle="round,pad=0",
@@ -257,7 +275,7 @@ class ScrollableChart(ttk.Frame):
             ))
 
             x_offset = 0.0
-            for name, length in b["pieces"]:
+            for name, length, piece_id in b["pieces"]:
                 if name not in color_map:
                     color_map[name] = colors[color_idx % len(colors)]
                     color_idx += 1
@@ -269,13 +287,21 @@ class ScrollableChart(ttk.Frame):
                     linewidth=0.8, edgecolor="#333333", facecolor=color, alpha=0.88,
                 ))
 
-                label = f"{name}\n{length:.0f}"
                 fontsize = max(5.5, min(8.5, length / stock_length * 70))
-                ax.text(
-                    x_offset + length / 2, y, label,
-                    ha="center", va="center",
-                    fontsize=fontsize, fontweight="bold", color="#ffffff",
-                )
+
+                # Полная подпись и короткая (#id)
+                full_label = f"{name}\n{length:.0f}"
+                short_label = f"#{piece_id}\n{length:.0f}"
+
+                text_items.append({
+                    "x": x_offset + length / 2,
+                    "y": y,
+                    "full": full_label,
+                    "short": short_label,
+                    "fontsize": fontsize,
+                    "width": length,
+                })
+
                 x_offset += length
 
             remaining = b["remaining"]
@@ -293,14 +319,25 @@ class ScrollableChart(ttk.Frame):
                 fontsize=9, fontweight="bold", color="#444444",
             )
 
-        ax.set_xlim(-stock_length * 0.07, stock_length * 1.05)
-        ax.set_ylim(-0.8, n - 0.2 + 0.8)
-        ax.set_xlabel("Длина (мм)", fontsize=10)
-        ax.set_yticks([])
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_visible(False)
+        # Умные подписи: проверяем помещается ли название
+        PADDING_FACTOR = 1.3  # запас, чтобы текст не впритык к краям
 
+        for item in text_items:
+            full_w = self._get_text_width(ax, item["full"].split("\n")[0], item["fontsize"])
+            full_w *= PADDING_FACTOR
+
+            if full_w <= item["width"]:
+                label = item["full"]
+            else:
+                label = item["short"]
+
+            ax.text(
+                item["x"], item["y"], label,
+                ha="center", va="center",
+                fontsize=item["fontsize"], fontweight="bold", color="#ffffff",
+            )
+
+        # Заголовок
         total_stock = len(bins) * stock_length
         total_waste = sum(b_["remaining"] for b_ in bins)
         eff = ((total_stock - total_waste) / total_stock) * 100 if total_stock else 0
@@ -311,7 +348,15 @@ class ScrollableChart(ttk.Frame):
             fontsize=11, fontweight="bold", pad=12,
         )
 
+        # Легенда
         legend_handles = [
+            patches.Patch(facecolor=c, edgecolor="#333", label=f"#{pid} {nm}")
+            for nm, (c, pid) in {
+                n: (color_map[n], next(
+                    p["id"] for p in _parts_ref if p["name"] == n
+                )) for n in color_map
+            }.items()
+        ] if False else [
             patches.Patch(facecolor=c, edgecolor="#333", label=nm)
             for nm, c in color_map.items()
         ]
@@ -325,24 +370,17 @@ class ScrollableChart(ttk.Frame):
 
         self.fig.tight_layout()
 
-        # Встраиваем matplotlib canvas
-        self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=self.inner_frame)
         widget = self.mpl_canvas.get_tk_widget()
         widget.configure(width=canvas_width, height=fig_h_px)
         widget.pack(fill=tk.X, expand=False)
         self.mpl_canvas.draw()
 
-        # Обновляем scrollregion
         self.inner_frame.update_idletasks()
         self._on_frame_configure()
-
-        # Прокручиваем наверх
         self.tk_canvas.yview_moveto(0)
 
     def show_placeholder(self):
-        """Заглушка, пока нет данных."""
         self.clear()
-
         canvas_width = max(self.tk_canvas.winfo_width(), 600)
         fig_w = canvas_width / self.DPI
 
@@ -379,6 +417,7 @@ class CuttingApp:
         self.root.configure(bg="#f0f0f0")
 
         self.parts = []
+        self.next_id = 1  # счётчик номеров изделий
 
         self._build_ui()
 
@@ -387,7 +426,7 @@ class CuttingApp:
         main.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
         # ──── Левая панель ────
-        left = ttk.Frame(main, width=380)
+        left = ttk.Frame(main, width=400)
         main.add(left, weight=0)
 
         # Материал
@@ -441,18 +480,20 @@ class CuttingApp:
             side=tk.LEFT, padx=(5, 0)
         )
 
-        # Таблица
+        # Таблица с колонкой №
         table_frame = ttk.LabelFrame(left, text=" 📋 Список изделий (2×клик — редактировать) ", padding=5)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
 
-        columns = ("name", "length", "qty")
+        columns = ("id", "name", "length", "qty")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=8)
+        self.tree.heading("id", text="№")
         self.tree.heading("name", text="Название")
         self.tree.heading("length", text="Длина (мм)")
         self.tree.heading("qty", text="Кол-во")
+        self.tree.column("id", width=35, anchor=tk.CENTER)
         self.tree.column("name", width=140)
-        self.tree.column("length", width=90, anchor=tk.CENTER)
-        self.tree.column("qty", width=60, anchor=tk.CENTER)
+        self.tree.column("length", width=85, anchor=tk.CENTER)
+        self.tree.column("qty", width=55, anchor=tk.CENTER)
 
         scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -470,11 +511,9 @@ class CuttingApp:
         right = ttk.Frame(main)
         main.add(right, weight=1)
 
-        # Прокручиваемый график
         self.chart = ScrollableChart(right)
         self.chart.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Отчёт
         report_frame = ttk.LabelFrame(right, text=" 📊 Отчёт ", padding=5)
         report_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
 
@@ -485,7 +524,6 @@ class CuttingApp:
         )
         self.report_text.pack(fill=tk.X)
 
-        # Показываем заглушку после полной отрисовки окна
         self.root.after(100, self.chart.show_placeholder)
 
     # ── Добавление ──
@@ -510,8 +548,11 @@ class CuttingApp:
             messagebox.showwarning("Внимание", "Введите корректное количество!")
             return
 
-        self.parts.append({"name": name, "length": length, "qty": qty})
-        self.tree.insert("", tk.END, values=(name, length, qty))
+        part_id = self.next_id
+        self.next_id += 1
+
+        self.parts.append({"id": part_id, "name": name, "length": length, "qty": qty})
+        self.tree.insert("", tk.END, values=(f"#{part_id}", name, length, qty))
 
         self.part_name_var.set("")
         self.part_length_var.set("")
@@ -537,8 +578,10 @@ class CuttingApp:
 
         if dialog.result is not None:
             new_name, new_length, new_qty = dialog.result
-            self.parts[idx] = {"name": new_name, "length": new_length, "qty": new_qty}
-            self.tree.item(item, values=(new_name, new_length, new_qty))
+            self.parts[idx]["name"] = new_name
+            self.parts[idx]["length"] = new_length
+            self.parts[idx]["qty"] = new_qty
+            self.tree.item(item, values=(f"#{part['id']}", new_name, new_length, new_qty))
 
     # ── Удаление ──
 
@@ -557,6 +600,7 @@ class CuttingApp:
 
     def _clear_parts(self):
         self.parts.clear()
+        self.next_id = 1
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.chart.show_placeholder()
@@ -609,8 +653,8 @@ class CuttingApp:
             "",
         ]
         for i, b in enumerate(bins, 1):
-            parts_str = " + ".join(f"{n}({l:.0f})" for n, l in b["pieces"])
-            lines.append(f"  #{i}: {parts_str}  →  остаток {b['remaining']:.0f} мм")
+            parts_str = " + ".join(f"#{pid} {n}({l:.0f})" for n, l, pid in b["pieces"])
+            lines.append(f"  Заготовка #{i}: {parts_str}  →  остаток {b['remaining']:.0f} мм")
 
         self.report_text.delete("1.0", tk.END)
         self.report_text.insert("1.0", "\n".join(lines))
