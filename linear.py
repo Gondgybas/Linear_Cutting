@@ -14,6 +14,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.patches as patches
 from matplotlib.backends.backend_pdf import PdfPages
 from tkinter import filedialog
+import matplotlib.pyplot as plt
 
 
 # ─────────────────────────── Алгоритм ───────────────────────────
@@ -956,8 +957,6 @@ class CuttingApp:
             return
 
         try:
-            # Собираем данные
-            material_name = self.material_name_var.get().strip() or "Материал"
             stock_length = float(self.stock_length_var.get().replace(",", "."))
             margin_left = float(self.margin_left_var.get().replace(",", "."))
             margin_right = float(self.margin_right_var.get().replace(",", "."))
@@ -965,51 +964,101 @@ class CuttingApp:
             report_text = self.report_text.get("1.0", tk.END).strip()
 
             with PdfPages(filepath) as pdf:
-                # ── Страница 1: Заголовок + текстовый отчёт ──
+                # ── Страница 1: Заголовок + таблица изделий + отчёт ──
                 fig_report = Figure(figsize=(8.27, 11.69), dpi=100)  # A4
                 fig_report.patch.set_facecolor("#ffffff")
 
                 # Заголовок
+                title_text = f"Отчёт линейного раскроя\n«{material_name}»"
                 fig_report.text(
-                    0.5, 0.95,
-                    f"Отчёт линейного раскроя: «{material_name}»",
+                    0.5, 0.96, title_text,
                     ha="center", va="top",
-                    fontsize=18, fontweight="bold",
+                    fontsize=16, fontweight="bold",
+                    wrap=True,
                 )
 
                 # Параметры
-                params_text = (
-                    f"Длина заготовки: {stock_length:.0f} мм    "
-                    f"Припуск Л: {margin_left:.0f} мм    "
-                    f"Припуск П: {margin_right:.0f} мм    "
+                params_lines = (
+                    f"Длина заготовки: {stock_length:.0f} мм   |   "
+                    f"Припуск Л: {margin_left:.0f} мм   П: {margin_right:.0f} мм   |   "
                     f"Пропил: {kerf:.1f} мм"
                 )
                 fig_report.text(
-                    0.5, 0.93, params_text,
+                    0.5, 0.91, params_lines,
                     ha="center", va="top",
                     fontsize=10, color="#555555",
                 )
 
-                # Текстовый отчёт
+                # ── Таблица изделий ──
+                table_ax = fig_report.add_axes([0.06, 0.58, 0.88, 0.31])
+                table_ax.axis("off")
+
+                table_ax.text(
+                    0.0, 1.02, "Список изделий:",
+                    fontsize=12, fontweight="bold",
+                    transform=table_ax.transAxes,
+                )
+
+                table_data = []
+                for p in self.parts:
+                    pid = f"#{p['id']}"
+                    pname = p["name"] if p["name"] else "—"
+                    plength = f"{p['length']:.0f}"
+                    pqty = f"{p['qty']}"
+                    table_data.append([pid, pname, plength, pqty])
+
+                col_labels = ["№", "Название", "Длина (мм)", "Кол-во (шт)"]
+
+                table = table_ax.table(
+                    cellText=table_data,
+                    colLabels=col_labels,
+                    loc="upper center",
+                    cellLoc="center",
+                    colWidths=[0.08, 0.52, 0.20, 0.20],
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1, 1.4)
+
+                for j in range(len(col_labels)):
+                    cell = table[0, j]
+                    cell.set_facecolor("#4e79a7")
+                    cell.set_text_props(color="#ffffff", fontweight="bold")
+                    cell.set_edgecolor("#333333")
+
+                for i in range(1, len(table_data) + 1):
+                    for j in range(len(col_labels)):
+                        cell = table[i, j]
+                        cell.set_edgecolor("#cccccc")
+                        if i % 2 == 0:
+                            cell.set_facecolor("#f2f2f2")
+                        else:
+                            cell.set_facecolor("#ffffff")
+                    table[i, 1].set_text_props(ha="left")
+
+                # ── Текстовый отчёт ──
                 fig_report.text(
-                    0.06, 0.88, report_text,
+                    0.06, 0.55, "Результаты раскроя:",
                     ha="left", va="top",
-                    fontsize=9, fontfamily="monospace",
-                    linespacing=1.5,
+                    fontsize=12, fontweight="bold",
+                )
+
+                fig_report.text(
+                    0.06, 0.52, report_text,
+                    ha="left", va="top",
+                    fontsize=8.5, fontfamily="monospace",
+                    linespacing=1.4,
                 )
 
                 pdf.savefig(fig_report)
-                import matplotlib.pyplot as plt
                 plt.close(fig_report)
 
                 # ── Страницы визуализации ──
-                # Берём данные из текущего расчёта
                 bins, oversized = ffd_cutting(
                     stock_length - margin_left - margin_right,
                     self.parts, kerf
                 )
 
-                # Разбиваем по страницам (максимум строк на страницу)
                 max_rows_per_page = 20
                 total_bins = len(bins)
                 page_num = 0
@@ -1096,7 +1145,6 @@ class CuttingApp:
                             full_label = f"{name}\n{length:.0f}" if name else f"#{piece_id}\n{length:.0f}"
                             short_label = f"#{piece_id}\n{length:.0f}"
 
-                            # Простая проверка помещается ли текст
                             approx_char_w = stock_length / 120
                             text_len = len(full_label.split("\n")[0])
                             label = full_label if (text_len * approx_char_w) < length * 0.8 else short_label
