@@ -964,41 +964,38 @@ class CuttingApp:
             report_text = self.report_text.get("1.0", tk.END).strip()
 
             with PdfPages(filepath) as pdf:
-                # ── Страница 1: Заголовок + таблица изделий + отчёт ──
-                fig_report = Figure(figsize=(8.27, 11.69), dpi=100)  # A4
-                fig_report.patch.set_facecolor("#ffffff")
+                # ── Страницы отчёта (может быть несколько) ──
+                page_h = 11.69  # A4 высота в дюймах
+                page_w = 8.27   # A4 ширина
+                margin_top = 0.95
+                margin_bottom = 0.05
+                line_h = 0.015  # высота одной строки отчёта (в долях страницы)
+
+                # === Страница 1: заголовок + параметры + таблица ===
+                fig_p1 = Figure(figsize=(page_w, page_h), dpi=100)
+                fig_p1.patch.set_facecolor("#ffffff")
 
                 # Заголовок
-                title_text = f"Отчёт линейного раскроя\n«{material_name}»"
-                fig_report.text(
-                    0.5, 0.96, title_text,
+                fig_p1.text(
+                    0.5, margin_top, f"Отчёт линейного раскроя\n«{material_name}»",
                     ha="center", va="top",
                     fontsize=16, fontweight="bold",
-                    wrap=True,
                 )
 
                 # Параметры
+                params_y = margin_top - 0.07
                 params_lines = (
                     f"Длина заготовки: {stock_length:.0f} мм   |   "
                     f"Припуск Л: {margin_left:.0f} мм   П: {margin_right:.0f} мм   |   "
                     f"Пропил: {kerf:.1f} мм"
                 )
-                fig_report.text(
-                    0.5, 0.91, params_lines,
+                fig_p1.text(
+                    0.5, params_y, params_lines,
                     ha="center", va="top",
                     fontsize=10, color="#555555",
                 )
 
-                # ── Таблица изделий ──
-                table_ax = fig_report.add_axes([0.06, 0.58, 0.88, 0.31])
-                table_ax.axis("off")
-
-                table_ax.text(
-                    0.0, 1.02, "Список изделий:",
-                    fontsize=12, fontweight="bold",
-                    transform=table_ax.transAxes,
-                )
-
+                # Таблица изделий
                 table_data = []
                 for p in self.parts:
                     pid = f"#{p['id']}"
@@ -1008,6 +1005,25 @@ class CuttingApp:
                     table_data.append([pid, pname, plength, pqty])
 
                 col_labels = ["№", "Название", "Длина (мм)", "Кол-во (шт)"]
+                num_rows = len(table_data)
+                row_height_frac = 0.025  # высота строки таблицы в долях
+                table_height = (num_rows + 1) * row_height_frac  # +1 для заголовка
+                table_top = params_y - 0.04
+                table_bottom = table_top - table_height
+
+                # Проверяем, влезает ли таблица
+                if table_bottom < margin_bottom:
+                    table_bottom = margin_bottom
+                    table_height = table_top - table_bottom
+
+                table_ax = fig_p1.add_axes([0.06, table_bottom, 0.88, table_height])
+                table_ax.axis("off")
+
+                table_ax.text(
+                    0.0, 1.05, "Список изделий:",
+                    fontsize=12, fontweight="bold",
+                    transform=table_ax.transAxes,
+                )
 
                 table = table_ax.table(
                     cellText=table_data,
@@ -1036,22 +1052,47 @@ class CuttingApp:
                             cell.set_facecolor("#ffffff")
                     table[i, 1].set_text_props(ha="left")
 
-                # ── Текстовый отчёт ──
-                fig_report.text(
-                    0.06, 0.55, "Результаты раскроя:",
-                    ha="left", va="top",
-                    fontsize=12, fontweight="bold",
-                )
+                pdf.savefig(fig_p1)
+                plt.close(fig_p1)
 
-                fig_report.text(
-                    0.06, 0.52, report_text,
-                    ha="left", va="top",
-                    fontsize=8.5, fontfamily="monospace",
-                    linespacing=1.4,
-                )
+                # === Страницы текстового отчёта (с разбивкой) ===
+                report_lines = report_text.split("\n")
+                max_lines_per_page = 55
+                line_idx = 0
 
-                pdf.savefig(fig_report)
-                plt.close(fig_report)
+                while line_idx < len(report_lines):
+                    chunk = report_lines[line_idx:line_idx + max_lines_per_page]
+                    line_idx += max_lines_per_page
+
+                    fig_rpt = Figure(figsize=(page_w, page_h), dpi=100)
+                    fig_rpt.patch.set_facecolor("#ffffff")
+
+                    # Заголовок на каждой странице отчёта
+                    if line_idx <= max_lines_per_page:
+                        fig_rpt.text(
+                            0.06, margin_top, "Результаты раскроя:",
+                            ha="left", va="top",
+                            fontsize=14, fontweight="bold",
+                        )
+                        text_start_y = margin_top - 0.04
+                    else:
+                        fig_rpt.text(
+                            0.06, margin_top, "Результаты раскроя (продолжение):",
+                            ha="left", va="top",
+                            fontsize=14, fontweight="bold",
+                        )
+                        text_start_y = margin_top - 0.04
+
+                    fig_rpt.text(
+                        0.06, text_start_y,
+                        "\n".join(chunk),
+                        ha="left", va="top",
+                        fontsize=8.5, fontfamily="monospace",
+                        linespacing=1.4,
+                    )
+
+                    pdf.savefig(fig_rpt)
+                    plt.close(fig_rpt)
 
                 # ── Страницы визуализации ──
                 bins, oversized = ffd_cutting(
