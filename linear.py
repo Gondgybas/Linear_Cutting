@@ -2,6 +2,7 @@
 Программа линейного раскроя материала с GUI интерфейсом.
 Алгоритм: First Fit Decreasing (FFD).
 Интерфейс: tkinter + matplotlib.
+Возможность редактирования изделий двойным кликом.
 """
 
 import tkinter as tk
@@ -47,6 +48,84 @@ def ffd_cutting(stock_length, parts):
     return bins
 
 
+# ─────────────────────── Окно редактирования ─────────────────────
+
+class EditPartDialog(tk.Toplevel):
+    """Модальное окно для редактирования изделия."""
+
+    def __init__(self, parent, name, length, qty):
+        super().__init__(parent)
+        self.title("Редактирование изделия")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus_set()
+
+        self.result = None  # будет (name, length, qty) или None
+
+        # Центрируем окно относительно родителя
+        w, h = 340, 200
+        x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+        frame = ttk.Frame(self, padding=15)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Название:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.name_var = tk.StringVar(value=name)
+        self.name_entry = ttk.Entry(frame, textvariable=self.name_var, width=25)
+        self.name_entry.grid(row=0, column=1, padx=(10, 0), pady=5)
+        self.name_entry.focus_set()
+        self.name_entry.select_range(0, tk.END)
+
+        ttk.Label(frame, text="Длина (мм):").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.length_var = tk.StringVar(value=str(length))
+        ttk.Entry(frame, textvariable=self.length_var, width=25).grid(
+            row=1, column=1, padx=(10, 0), pady=5
+        )
+
+        ttk.Label(frame, text="Количество:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.qty_var = tk.StringVar(value=str(qty))
+        ttk.Entry(frame, textvariable=self.qty_var, width=25).grid(
+            row=2, column=1, padx=(10, 0), pady=5
+        )
+
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=3, column=0, columnspan=2, pady=(15, 0))
+
+        ttk.Button(btn_row, text="✅ Сохранить", command=self._save).pack(
+            side=tk.LEFT, padx=(0, 10)
+        )
+        ttk.Button(btn_row, text="❌ Отмена", command=self.destroy).pack(side=tk.LEFT)
+
+        # Enter = сохранить, Escape = закрыть
+        self.bind("<Return>", lambda e: self._save())
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _save(self):
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Внимание", "Введите название!", parent=self)
+            return
+        try:
+            length = float(self.length_var.get())
+            if length <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Внимание", "Введите корректную длину!", parent=self)
+            return
+        try:
+            qty = int(self.qty_var.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Внимание", "Введите корректное количество!", parent=self)
+            return
+
+        self.result = (name, length, qty)
+        self.destroy()
+
+
 # ─────────────────────────── GUI ───────────────────────────
 
 class CuttingApp:
@@ -64,7 +143,6 @@ class CuttingApp:
     # ── Построение интерфейса ──
 
     def _build_ui(self):
-        # Главный контейнер
         main = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
@@ -116,15 +194,15 @@ class CuttingApp:
         ttk.Button(btn_row, text="➕ Добавить", command=self._add_part).pack(
             side=tk.LEFT, padx=(0, 5)
         )
-        ttk.Button(btn_row, text="🗑 Удалить выбранное", command=self._delete_part).pack(
+        ttk.Button(btn_row, text="🗑 Удалить", command=self._delete_part).pack(
             side=tk.LEFT, padx=5
         )
-        ttk.Button(btn_row, text="🧹 Очистить всё", command=self._clear_parts).pack(
+        ttk.Button(btn_row, text="🧹 Очистить", command=self._clear_parts).pack(
             side=tk.LEFT, padx=(5, 0)
         )
 
         # --- Таблица изделий ---
-        table_frame = ttk.LabelFrame(left, text=" 📋 Список изделий ", padding=5)
+        table_frame = ttk.LabelFrame(left, text=" 📋 Список изделий (двойной клик — редактировать) ", padding=5)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
 
         columns = ("name", "length", "qty")
@@ -141,23 +219,23 @@ class CuttingApp:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # >>> Двойной клик для редактирования <<<
+        self.tree.bind("<Double-1>", self._on_double_click)
+
         # --- Кнопка расчёта ---
         ttk.Button(
             left, text="🔧  РАССЧИТАТЬ РАСКРОЙ", command=self._calculate,
-            style="Accent.TButton"
         ).pack(fill=tk.X, padx=5, pady=(0, 5), ipady=8)
 
         # ──── Правая панель (визуализация + отчёт) ────
         right = ttk.Frame(main)
         main.add(right, weight=1)
 
-        # Визуализация (matplotlib)
         self.fig = Figure(figsize=(7, 4), dpi=100)
         self.fig.patch.set_facecolor("#fafafa")
         self.canvas = FigureCanvasTkAgg(self.fig, master=right)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Текстовый отчёт
         report_frame = ttk.LabelFrame(right, text=" 📊 Отчёт ", padding=5)
         report_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
 
@@ -198,38 +276,66 @@ class CuttingApp:
             if length <= 0:
                 raise ValueError
         except ValueError:
-            messagebox.showwarning("Внимание", "Введите корректную длину (положительное число)!")
+            messagebox.showwarning("Внимание", "Введите корректную длину!")
             return
         try:
             qty = int(self.part_qty_var.get())
             if qty <= 0:
                 raise ValueError
         except ValueError:
-            messagebox.showwarning("Внимание", "Введите корректное количество (целое положительное)!")
+            messagebox.showwarning("Внимание", "Введите корректное количество!")
             return
 
         self.parts.append({"name": name, "length": length, "qty": qty})
         self.tree.insert("", tk.END, values=(name, length, qty))
 
-        # Сбросить поля ввода
         self.part_name_var.set("")
         self.part_length_var.set("")
         self.part_qty_var.set("1")
+
+    # ── Редактирование по двойному клику ──
+
+    def _on_double_click(self, event):
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+
+        idx = self.tree.index(item)
+        part = self.parts[idx]
+
+        dialog = EditPartDialog(
+            self.root,
+            name=part["name"],
+            length=part["length"],
+            qty=part["qty"],
+        )
+        # Ждём закрытия окна
+        self.root.wait_window(dialog)
+
+        if dialog.result is not None:
+            new_name, new_length, new_qty = dialog.result
+
+            # Обновляем данные
+            self.parts[idx] = {"name": new_name, "length": new_length, "qty": new_qty}
+
+            # Обновляем строку в таблице
+            self.tree.item(item, values=(new_name, new_length, new_qty))
 
     # ── Удаление выбранного ──
 
     def _delete_part(self):
         selected = self.tree.selection()
         if not selected:
-            messagebox.showinfo("Подсказка", "Выберите строку в таблице для удаления.")
+            messagebox.showinfo("Подсказка", "Выберите строку для удаления.")
             return
+        # Удаляем в обратном порядке, чтобы индексы не сбились
+        indices = sorted([self.tree.index(item) for item in selected], reverse=True)
+        for idx in indices:
+            self.parts.pop(idx)
         for item in selected:
-            idx = self.tree.index(item)
             self.tree.delete(item)
-            if idx < len(self.parts):
-                self.parts.pop(idx)
 
-    # ── Очистка всего ──
+    # ── Очистка ──
 
     def _clear_parts(self):
         self.parts.clear()
@@ -241,7 +347,6 @@ class CuttingApp:
     # ── Расчёт ──
 
     def _calculate(self):
-        # Валидация
         try:
             stock_length = float(self.stock_length_var.get())
             if stock_length <= 0:
@@ -259,7 +364,7 @@ class CuttingApp:
         try:
             bins = ffd_cutting(stock_length, self.parts)
         except ValueError as e:
-            messagebox.showerror("��шибка", str(e))
+            messagebox.showerror("Ошибка", str(e))
             return
 
         self._draw_chart(material_name, stock_length, bins)
@@ -287,7 +392,6 @@ class CuttingApp:
         for i, b in enumerate(bins):
             y = n - 1 - i
 
-            # Фон заготовки
             ax.add_patch(patches.FancyBboxPatch(
                 (0, y - bar_height / 2), stock_length, bar_height,
                 boxstyle="round,pad=0",
@@ -316,7 +420,6 @@ class CuttingApp:
                 )
                 x_offset += length
 
-            # Остаток
             remaining = b["remaining"]
             if remaining > stock_length * 0.03:
                 ax.text(
@@ -326,7 +429,6 @@ class CuttingApp:
                     fontsize=6.5, fontstyle="italic", color="#999999",
                 )
 
-            # Номер
             ax.text(
                 -stock_length * 0.015, y,
                 f"#{i + 1}", ha="right", va="center",
@@ -351,7 +453,6 @@ class CuttingApp:
             fontsize=11, fontweight="bold", pad=12,
         )
 
-        # Легенда
         legend_handles = [
             patches.Patch(facecolor=c, edgecolor="#333", label=nm)
             for nm, c in color_map.items()
