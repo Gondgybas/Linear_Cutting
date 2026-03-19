@@ -104,9 +104,7 @@ class EditPartDialog(tk.Toplevel):
 
     def _save(self):
         name = self.name_var.get().strip()
-        if not name:
-            messagebox.showwarning("Внимание", "Введите название!", parent=self)
-            return
+        # Название может быть пустым — это допустимо
         try:
             length = float(self.length_var.get())
             if length <= 0:
