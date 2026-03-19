@@ -3,6 +3,7 @@
 Алгоритм: First Fit Decreasing (FFD).
 Интерфейс: tkinter + matplotlib.
 Возможность редактирования изделий двойным кликом.
+Прокрутка визуализации колёсиком мыши.
 """
 
 import tkinter as tk
@@ -60,9 +61,8 @@ class EditPartDialog(tk.Toplevel):
         self.grab_set()
         self.focus_set()
 
-        self.result = None  # будет (name, length, qty) или None
+        self.result = None
 
-        # Центрируем окно относительно родителя
         w, h = 340, 200
         x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
         y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
@@ -98,7 +98,6 @@ class EditPartDialog(tk.Toplevel):
         )
         ttk.Button(btn_row, text="❌ Отмена", command=self.destroy).pack(side=tk.LEFT)
 
-        # Enter = сохранить, Escape = закрыть
         self.bind("<Return>", lambda e: self._save())
         self.bind("<Escape>", lambda e: self.destroy())
 
@@ -126,257 +125,115 @@ class EditPartDialog(tk.Toplevel):
         self.destroy()
 
 
-# ─────────────────────────── GUI ───────────────────────────
+# ──────────────── Прокручиваемый Canvas с matplotlib ────────────────
 
-class CuttingApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Линейный раскрой материала")
-        self.root.geometry("1100x750")
-        self.root.minsize(900, 600)
-        self.root.configure(bg="#f0f0f0")
+class ScrollableChart(ttk.Frame):
+    """
+    Фрейм с matplotlib-графиком внутри прокручиваемой области.
+    Каждая заготовка имеет фиксированную высоту, а при большом
+    количестве заготовок появляется вертикальная прокрутка.
+    """
 
-        self.parts = []
+    ROW_HEIGHT_PX = 60       # высота одной заготовки в пикселях
+    PADDING_TOP_PX = 80      # место под заголовок и легенду
+    PADDING_BOTTOM_PX = 40   # место под ось X
+    DPI = 100
 
-        self._build_ui()
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
 
-    # ── Построение интерфейса ──
+        # Canvas tkinter для прокрутки
+        self.tk_canvas = tk.Canvas(self, bg="#fafafa", highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tk_canvas.yview)
+        self.tk_canvas.configure(yscrollcommand=self.scrollbar.set)
 
-    def _build_ui(self):
-        main = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        main.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tk_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # ──── Левая панель (ввод данных) ────
-        left = ttk.Frame(main, width=380)
-        main.add(left, weight=0)
-
-        # --- Материал ---
-        mat_frame = ttk.LabelFrame(left, text=" 📦 Материал ", padding=10)
-        mat_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
-
-        ttk.Label(mat_frame, text="Название:").grid(row=0, column=0, sticky=tk.W, pady=3)
-        self.material_name_var = tk.StringVar(value="Труба профильная")
-        ttk.Entry(mat_frame, textvariable=self.material_name_var, width=28).grid(
-            row=0, column=1, padx=(5, 0), pady=3
+        # Внутренний фрейм
+        self.inner_frame = ttk.Frame(self.tk_canvas)
+        self.window_id = self.tk_canvas.create_window(
+            (0, 0), window=self.inner_frame, anchor=tk.NW
         )
 
-        ttk.Label(mat_frame, text="Длина заготовки (мм):").grid(row=1, column=0, sticky=tk.W, pady=3)
-        self.stock_length_var = tk.StringVar(value="6000")
-        ttk.Entry(mat_frame, textvariable=self.stock_length_var, width=28).grid(
-            row=1, column=1, padx=(5, 0), pady=3
-        )
+        # matplotlib Figure и Canvas (будут созданы при отрисовке)
+        self.fig = None
+        self.mpl_canvas = None
 
-        # --- Добавление изделия ---
-        add_frame = ttk.LabelFrame(left, text=" ✏️ Добавить изделие ", padding=10)
-        add_frame.pack(fill=tk.X, padx=5, pady=(0, 10))
+        # Прокрутка колёсиком
+        self.tk_canvas.bind("<Enter>", self._bind_mousewheel)
+        self.tk_canvas.bind("<Leave>", self._unbind_mousewheel)
 
-        ttk.Label(add_frame, text="Название:").grid(row=0, column=0, sticky=tk.W, pady=3)
-        self.part_name_var = tk.StringVar()
-        ttk.Entry(add_frame, textvariable=self.part_name_var, width=28).grid(
-            row=0, column=1, padx=(5, 0), pady=3
-        )
+        # Подгонка ширины при ресайзе
+        self.tk_canvas.bind("<Configure>", self._on_canvas_configure)
+        self.inner_frame.bind("<Configure>", self._on_frame_configure)
 
-        ttk.Label(add_frame, text="Длина (мм):").grid(row=1, column=0, sticky=tk.W, pady=3)
-        self.part_length_var = tk.StringVar()
-        ttk.Entry(add_frame, textvariable=self.part_length_var, width=28).grid(
-            row=1, column=1, padx=(5, 0), pady=3
-        )
+    def _on_frame_configure(self, event=None):
+        self.tk_canvas.configure(scrollregion=self.tk_canvas.bbox("all"))
 
-        ttk.Label(add_frame, text="Количество:").grid(row=2, column=0, sticky=tk.W, pady=3)
-        self.part_qty_var = tk.StringVar(value="1")
-        ttk.Entry(add_frame, textvariable=self.part_qty_var, width=28).grid(
-            row=2, column=1, padx=(5, 0), pady=3
-        )
+    def _on_canvas_configure(self, event=None):
+        width = self.tk_canvas.winfo_width()
+        self.tk_canvas.itemconfig(self.window_id, width=width)
+        # Если уже есть график — перерисуем с новой шириной
+        if self.fig and self.mpl_canvas:
+            fig_w = width / self.DPI
+            fig_h = self.fig.get_figheight()
+            self.fig.set_size_inches(fig_w, fig_h)
+            self.mpl_canvas.draw()
+            self.mpl_canvas.get_tk_widget().configure(
+                width=width, height=int(fig_h * self.DPI)
+            )
+            self._on_frame_configure()
 
-        btn_row = ttk.Frame(add_frame)
-        btn_row.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+    def _bind_mousewheel(self, event=None):
+        self.tk_canvas.bind_all("<MouseWheel>", self._on_mousewheel)           # Windows/macOS
+        self.tk_canvas.bind_all("<Button-4>", self._on_mousewheel_linux)       # Linux scroll up
+        self.tk_canvas.bind_all("<Button-5>", self._on_mousewheel_linux)       # Linux scroll down
 
-        ttk.Button(btn_row, text="➕ Добавить", command=self._add_part).pack(
-            side=tk.LEFT, padx=(0, 5)
-        )
-        ttk.Button(btn_row, text="🗑 Удалить", command=self._delete_part).pack(
-            side=tk.LEFT, padx=5
-        )
-        ttk.Button(btn_row, text="🧹 Очистить", command=self._clear_parts).pack(
-            side=tk.LEFT, padx=(5, 0)
-        )
+    def _unbind_mousewheel(self, event=None):
+        self.tk_canvas.unbind_all("<MouseWheel>")
+        self.tk_canvas.unbind_all("<Button-4>")
+        self.tk_canvas.unbind_all("<Button-5>")
 
-        # --- Таблица изделий ---
-        table_frame = ttk.LabelFrame(left, text=" 📋 Список изделий (двойной клик — редактировать) ", padding=5)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
+    def _on_mousewheel(self, event):
+        # Windows: event.delta = ±120, macOS: ±1
+        if abs(event.delta) >= 120:
+            self.tk_canvas.yview_scroll(-event.delta // 120, "units")
+        else:
+            self.tk_canvas.yview_scroll(-event.delta, "units")
 
-        columns = ("name", "length", "qty")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=8)
-        self.tree.heading("name", text="Название")
-        self.tree.heading("length", text="Длина (мм)")
-        self.tree.heading("qty", text="Кол-во")
-        self.tree.column("name", width=140)
-        self.tree.column("length", width=90, anchor=tk.CENTER)
-        self.tree.column("qty", width=60, anchor=tk.CENTER)
+    def _on_mousewheel_linux(self, event):
+        if event.num == 4:
+            self.tk_canvas.yview_scroll(-3, "units")
+        elif event.num == 5:
+            self.tk_canvas.yview_scroll(3, "units")
 
-        scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    def clear(self):
+        """Удалить текущий график."""
+        if self.mpl_canvas:
+            self.mpl_canvas.get_tk_widget().destroy()
+            self.mpl_canvas = None
+        if self.fig:
+            import matplotlib.pyplot as plt
+            plt.close(self.fig)
+            self.fig = None
 
-        # >>> Двойной клик для редактирования <<<
-        self.tree.bind("<Double-1>", self._on_double_click)
-
-        # --- Кнопка расчёта ---
-        ttk.Button(
-            left, text="🔧  РАССЧИТАТЬ РАСКРОЙ", command=self._calculate,
-        ).pack(fill=tk.X, padx=5, pady=(0, 5), ipady=8)
-
-        # ──── Правая панель (визуализация + отчёт) ────
-        right = ttk.Frame(main)
-        main.add(right, weight=1)
-
-        self.fig = Figure(figsize=(7, 4), dpi=100)
-        self.fig.patch.set_facecolor("#fafafa")
-        self.canvas = FigureCanvasTkAgg(self.fig, master=right)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        report_frame = ttk.LabelFrame(right, text=" 📊 Отчёт ", padding=5)
-        report_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
-
-        self.report_text = tk.Text(
-            report_frame, height=8, font=("Consolas", 10),
-            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#ffffff",
-            relief=tk.FLAT, wrap=tk.WORD
-        )
-        self.report_text.pack(fill=tk.X)
-
-        self._show_placeholder()
-
-    # ── Заглушка на графике ──
-
-    def _show_placeholder(self):
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        ax.text(
-            0.5, 0.5, "Добавьте изделия и нажмите\n«РАССЧИТАТЬ РАСКРОЙ»",
-            ha="center", va="center", fontsize=14, color="#999999",
-            transform=ax.transAxes
-        )
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        self.canvas.draw()
-
-    # ── Добавление изделия ──
-
-    def _add_part(self):
-        name = self.part_name_var.get().strip()
-        if not name:
-            messagebox.showwarning("Внимание", "Введите название изделия!")
-            return
-        try:
-            length = float(self.part_length_var.get())
-            if length <= 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showwarning("Внимание", "Введите корректную длину!")
-            return
-        try:
-            qty = int(self.part_qty_var.get())
-            if qty <= 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showwarning("Внимание", "Введите корректное количество!")
-            return
-
-        self.parts.append({"name": name, "length": length, "qty": qty})
-        self.tree.insert("", tk.END, values=(name, length, qty))
-
-        self.part_name_var.set("")
-        self.part_length_var.set("")
-        self.part_qty_var.set("1")
-
-    # ── Редактирование по двойному клику ──
-
-    def _on_double_click(self, event):
-        item = self.tree.identify_row(event.y)
-        if not item:
-            return
-
-        idx = self.tree.index(item)
-        part = self.parts[idx]
-
-        dialog = EditPartDialog(
-            self.root,
-            name=part["name"],
-            length=part["length"],
-            qty=part["qty"],
-        )
-        # Ждём закрытия окна
-        self.root.wait_window(dialog)
-
-        if dialog.result is not None:
-            new_name, new_length, new_qty = dialog.result
-
-            # Обновляем данные
-            self.parts[idx] = {"name": new_name, "length": new_length, "qty": new_qty}
-
-            # Обновляем строку в таблице
-            self.tree.item(item, values=(new_name, new_length, new_qty))
-
-    # ── Удаление выбранного ──
-
-    def _delete_part(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showinfo("Подсказка", "Выберите строку для удаления.")
-            return
-        # Удаляем в обратном порядке, чтобы индексы не сбились
-        indices = sorted([self.tree.index(item) for item in selected], reverse=True)
-        for idx in indices:
-            self.parts.pop(idx)
-        for item in selected:
-            self.tree.delete(item)
-
-    # ── Очистка ──
-
-    def _clear_parts(self):
-        self.parts.clear()
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self._show_placeholder()
-        self.report_text.delete("1.0", tk.END)
-
-    # ── Расчёт ──
-
-    def _calculate(self):
-        try:
-            stock_length = float(self.stock_length_var.get())
-            if stock_length <= 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror("Ошибка", "Введите корректную длину заготовки!")
-            return
-
-        if not self.parts:
-            messagebox.showwarning("Внимание", "Добавьте хотя бы одно изделие!")
-            return
-
-        material_name = self.material_name_var.get().strip() or "Материал"
-
-        try:
-            bins = ffd_cutting(stock_length, self.parts)
-        except ValueError as e:
-            messagebox.showerror("Ошибка", str(e))
-            return
-
-        self._draw_chart(material_name, stock_length, bins)
-        self._fill_report(material_name, stock_length, bins)
-
-    # ── Визуализация ──
-
-    def _draw_chart(self, material_name, stock_length, bins):
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
+    def draw(self, material_name, stock_length, bins):
+        """Отрисовать карту раскроя с фиксированной высотой строк."""
+        self.clear()
 
         n = len(bins)
+
+        # Вычисляем размер фигуры
+        canvas_width = max(self.tk_canvas.winfo_width(), 600)
+        fig_w = canvas_width / self.DPI
+        fig_h_px = self.PADDING_TOP_PX + n * self.ROW_HEIGHT_PX + self.PADDING_BOTTOM_PX
+        fig_h = fig_h_px / self.DPI
+
+        self.fig = Figure(figsize=(fig_w, fig_h), dpi=self.DPI)
+        self.fig.patch.set_facecolor("#fafafa")
+        ax = self.fig.add_subplot(111)
+
         bar_height = 0.6
 
         color_map = {}
@@ -392,6 +249,7 @@ class CuttingApp:
         for i, b in enumerate(bins):
             y = n - 1 - i
 
+            # Фон заготовки
             ax.add_patch(patches.FancyBboxPatch(
                 (0, y - bar_height / 2), stock_length, bar_height,
                 boxstyle="round,pad=0",
@@ -466,9 +324,271 @@ class CuttingApp:
         )
 
         self.fig.tight_layout()
-        self.canvas.draw()
 
-    # ── Текстовый отчёт ──
+        # Встраиваем matplotlib canvas
+        self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=self.inner_frame)
+        widget = self.mpl_canvas.get_tk_widget()
+        widget.configure(width=canvas_width, height=fig_h_px)
+        widget.pack(fill=tk.X, expand=False)
+        self.mpl_canvas.draw()
+
+        # Обновляем scrollregion
+        self.inner_frame.update_idletasks()
+        self._on_frame_configure()
+
+        # Прокручиваем наверх
+        self.tk_canvas.yview_moveto(0)
+
+    def show_placeholder(self):
+        """Заглушка, пока нет данных."""
+        self.clear()
+
+        canvas_width = max(self.tk_canvas.winfo_width(), 600)
+        fig_w = canvas_width / self.DPI
+
+        self.fig = Figure(figsize=(fig_w, 3), dpi=self.DPI)
+        self.fig.patch.set_facecolor("#fafafa")
+        ax = self.fig.add_subplot(111)
+        ax.text(
+            0.5, 0.5, "Добавьте изделия и нажмите\n«РАССЧИТАТЬ РАСКРОЙ»",
+            ha="center", va="center", fontsize=14, color="#999999",
+            transform=ax.transAxes
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=self.inner_frame)
+        widget = self.mpl_canvas.get_tk_widget()
+        widget.configure(width=canvas_width, height=300)
+        widget.pack(fill=tk.X, expand=False)
+        self.mpl_canvas.draw()
+        self.inner_frame.update_idletasks()
+        self._on_frame_configure()
+
+
+# ─────────────────────────── GUI ───────────────────────────
+
+class CuttingApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Линейный раскрой материала")
+        self.root.geometry("1100x750")
+        self.root.minsize(900, 600)
+        self.root.configure(bg="#f0f0f0")
+
+        self.parts = []
+
+        self._build_ui()
+
+    def _build_ui(self):
+        main = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        main.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # ──── Левая панель ────
+        left = ttk.Frame(main, width=380)
+        main.add(left, weight=0)
+
+        # Материал
+        mat_frame = ttk.LabelFrame(left, text=" 📦 Материал ", padding=10)
+        mat_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
+
+        ttk.Label(mat_frame, text="Название:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.material_name_var = tk.StringVar(value="Труба профильная")
+        ttk.Entry(mat_frame, textvariable=self.material_name_var, width=28).grid(
+            row=0, column=1, padx=(5, 0), pady=3
+        )
+
+        ttk.Label(mat_frame, text="Длина заготовки (мм):").grid(row=1, column=0, sticky=tk.W, pady=3)
+        self.stock_length_var = tk.StringVar(value="6000")
+        ttk.Entry(mat_frame, textvariable=self.stock_length_var, width=28).grid(
+            row=1, column=1, padx=(5, 0), pady=3
+        )
+
+        # Добавление изделия
+        add_frame = ttk.LabelFrame(left, text=" ✏️ Добавить изделие ", padding=10)
+        add_frame.pack(fill=tk.X, padx=5, pady=(0, 10))
+
+        ttk.Label(add_frame, text="Название:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.part_name_var = tk.StringVar()
+        ttk.Entry(add_frame, textvariable=self.part_name_var, width=28).grid(
+            row=0, column=1, padx=(5, 0), pady=3
+        )
+
+        ttk.Label(add_frame, text="Длина (мм):").grid(row=1, column=0, sticky=tk.W, pady=3)
+        self.part_length_var = tk.StringVar()
+        ttk.Entry(add_frame, textvariable=self.part_length_var, width=28).grid(
+            row=1, column=1, padx=(5, 0), pady=3
+        )
+
+        ttk.Label(add_frame, text="Количество:").grid(row=2, column=0, sticky=tk.W, pady=3)
+        self.part_qty_var = tk.StringVar(value="1")
+        ttk.Entry(add_frame, textvariable=self.part_qty_var, width=28).grid(
+            row=2, column=1, padx=(5, 0), pady=3
+        )
+
+        btn_row = ttk.Frame(add_frame)
+        btn_row.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+
+        ttk.Button(btn_row, text="➕ Добавить", command=self._add_part).pack(
+            side=tk.LEFT, padx=(0, 5)
+        )
+        ttk.Button(btn_row, text="🗑 Удалить", command=self._delete_part).pack(
+            side=tk.LEFT, padx=5
+        )
+        ttk.Button(btn_row, text="🧹 Очистить", command=self._clear_parts).pack(
+            side=tk.LEFT, padx=(5, 0)
+        )
+
+        # Таблица
+        table_frame = ttk.LabelFrame(left, text=" 📋 Список изделий (2×клик — редактировать) ", padding=5)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
+
+        columns = ("name", "length", "qty")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=8)
+        self.tree.heading("name", text="Название")
+        self.tree.heading("length", text="Длина (мм)")
+        self.tree.heading("qty", text="Кол-во")
+        self.tree.column("name", width=140)
+        self.tree.column("length", width=90, anchor=tk.CENTER)
+        self.tree.column("qty", width=60, anchor=tk.CENTER)
+
+        scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree.bind("<Double-1>", self._on_double_click)
+
+        # Кнопка расчёта
+        ttk.Button(
+            left, text="🔧  РАССЧИТАТЬ РАСКРОЙ", command=self._calculate,
+        ).pack(fill=tk.X, padx=5, pady=(0, 5), ipady=8)
+
+        # ──── Правая панель ────
+        right = ttk.Frame(main)
+        main.add(right, weight=1)
+
+        # Прокручиваемый график
+        self.chart = ScrollableChart(right)
+        self.chart.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Отчёт
+        report_frame = ttk.LabelFrame(right, text=" 📊 Отчёт ", padding=5)
+        report_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        self.report_text = tk.Text(
+            report_frame, height=8, font=("Consolas", 10),
+            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#ffffff",
+            relief=tk.FLAT, wrap=tk.WORD
+        )
+        self.report_text.pack(fill=tk.X)
+
+        # Показываем заглушку после полной отрисовки окна
+        self.root.after(100, self.chart.show_placeholder)
+
+    # ── Добавление ──
+
+    def _add_part(self):
+        name = self.part_name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Внимание", "Введите название изделия!")
+            return
+        try:
+            length = float(self.part_length_var.get())
+            if length <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Внимание", "Введите корректную длину!")
+            return
+        try:
+            qty = int(self.part_qty_var.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Внимание", "Введите корректное количество!")
+            return
+
+        self.parts.append({"name": name, "length": length, "qty": qty})
+        self.tree.insert("", tk.END, values=(name, length, qty))
+
+        self.part_name_var.set("")
+        self.part_length_var.set("")
+        self.part_qty_var.set("1")
+
+    # ── Редактирование ──
+
+    def _on_double_click(self, event):
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+
+        idx = self.tree.index(item)
+        part = self.parts[idx]
+
+        dialog = EditPartDialog(
+            self.root,
+            name=part["name"],
+            length=part["length"],
+            qty=part["qty"],
+        )
+        self.root.wait_window(dialog)
+
+        if dialog.result is not None:
+            new_name, new_length, new_qty = dialog.result
+            self.parts[idx] = {"name": new_name, "length": new_length, "qty": new_qty}
+            self.tree.item(item, values=(new_name, new_length, new_qty))
+
+    # ── Удаление ──
+
+    def _delete_part(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo("Подсказка", "Выберите строку для удаления.")
+            return
+        indices = sorted([self.tree.index(item) for item in selected], reverse=True)
+        for idx in indices:
+            self.parts.pop(idx)
+        for item in selected:
+            self.tree.delete(item)
+
+    # ── Очистка ──
+
+    def _clear_parts(self):
+        self.parts.clear()
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.chart.show_placeholder()
+        self.report_text.delete("1.0", tk.END)
+
+    # ── Расчёт ──
+
+    def _calculate(self):
+        try:
+            stock_length = float(self.stock_length_var.get())
+            if stock_length <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректную длину заготовки!")
+            return
+
+        if not self.parts:
+            messagebox.showwarning("Внимание", "Добавьте хотя бы одно изделие!")
+            return
+
+        material_name = self.material_name_var.get().strip() or "Материал"
+
+        try:
+            bins = ffd_cutting(stock_length, self.parts)
+        except ValueError as e:
+            messagebox.showerror("Ошибка", str(e))
+            return
+
+        self.chart.draw(material_name, stock_length, bins)
+        self._fill_report(material_name, stock_length, bins)
+
+    # ── Отчёт ──
 
     def _fill_report(self, material_name, stock_length, bins):
         total_pieces = sum(p["qty"] for p in self.parts)
