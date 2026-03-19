@@ -12,6 +12,8 @@ from tkinter import ttk, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.patches as patches
+from matplotlib.backends.backend_pdf import PdfPages
+from tkinter import filedialog
 
 
 # ─────────────────────────── Алгоритм ───────────────────────────
@@ -697,6 +699,11 @@ class CuttingApp:
             left, text="🔧  РАССЧИТАТЬ РАСКРОЙ", command=self._calculate,
         ).pack(fill=tk.X, padx=5, pady=(0, 5), ipady=8)
 
+        # Кнопка экспорта PDF
+        ttk.Button(
+            left, text="📄  ЭКСПОРТ В PDF", command=self._export_pdf,
+        ).pack(fill=tk.X, padx=5, pady=(0, 5), ipady=4)
+
         # ──── Правая панель ────
         right = ttk.Frame(main)
         main.add(right, weight=1)
@@ -930,6 +937,246 @@ class CuttingApp:
 
         self.report_text.delete("1.0", tk.END)
         self.report_text.insert("1.0", "\n".join(lines))
+
+    def _export_pdf(self):
+        """Экспорт отчёта и визуализации в PDF."""
+        # Проверяем, что расчёт уже выполнен
+        if not self.chart.fig or not self.chart.mpl_canvas:
+            messagebox.showwarning("Внимание", "Сначала выполните расчёт раскроя!")
+            return
+
+        # Диалог сохранения
+        filepath = filedialog.asksaveasfilename(
+            title="Сохранить отчёт в PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF файлы", "*.pdf"), ("Все файлы", "*.*")],
+            initialfile="раскрой.pdf",
+        )
+        if not filepath:
+            return
+
+        try:
+            # Собираем данные
+            material_name = self.material_name_var.get().strip() or "Материал"
+            stock_length = float(self.stock_length_var.get().replace(",", "."))
+            margin_left = float(self.margin_left_var.get().replace(",", "."))
+            margin_right = float(self.margin_right_var.get().replace(",", "."))
+            kerf = float(self.kerf_var.get().replace(",", "."))
+            report_text = self.report_text.get("1.0", tk.END).strip()
+
+            with PdfPages(filepath) as pdf:
+                # ── Страница 1: Заголовок + текстовый отчёт ──
+                fig_report = Figure(figsize=(8.27, 11.69), dpi=100)  # A4
+                fig_report.patch.set_facecolor("#ffffff")
+
+                # Заголовок
+                fig_report.text(
+                    0.5, 0.95,
+                    f"Отчёт линейного раскроя: «{material_name}»",
+                    ha="center", va="top",
+                    fontsize=18, fontweight="bold",
+                )
+
+                # Линия под заголовком
+                fig_report.add_artist(
+                    patches.FancyBboxPatch(
+                        (0.05, 0.935), 0.9, 0.002,
+                        boxstyle="round,pad=0",
+                        facecolor="#4e79a7", edgecolor="none",
+                        transform=fig_report.transFigure,
+                    )
+                )
+
+                # Параметры
+                params_text = (
+                    f"Длина заготовки: {stock_length:.0f} мм    "
+                    f"Припуск Л: {margin_left:.0f} мм    "
+                    f"Припуск П: {margin_right:.0f} мм    "
+                    f"Пропил: {kerf:.1f} мм"
+                )
+                fig_report.text(
+                    0.5, 0.915, params_text,
+                    ha="center", va="top",
+                    fontsize=10, color="#555555",
+                )
+
+                # Текстовый отчёт
+                fig_report.text(
+                    0.06, 0.88, report_text,
+                    ha="left", va="top",
+                    fontsize=9, fontfamily="monospace",
+                    linespacing=1.5,
+                )
+
+                pdf.savefig(fig_report)
+                import matplotlib.pyplot as plt
+                plt.close(fig_report)
+
+                # ── Страницы визуализации ──
+                # Берём данные из текущего расчёта
+                bins, oversized = ffd_cutting(
+                    stock_length - margin_left - margin_right,
+                    self.parts, kerf
+                )
+
+                # Разбиваем по страницам (максимум строк на страницу)
+                max_rows_per_page = 20
+                total_bins = len(bins)
+                page_num = 0
+
+                while page_num * max_rows_per_page < total_bins:
+                    start = page_num * max_rows_per_page
+                    end = min(start + max_rows_per_page, total_bins)
+                    page_bins = bins[start:end]
+                    n = len(page_bins)
+
+                    fig_vis = Figure(figsize=(11.69, 8.27), dpi=100)  # A4 landscape
+                    fig_vis.patch.set_facecolor("#ffffff")
+                    ax = fig_vis.add_subplot(111)
+
+                    bar_height = 0.6
+                    color_map = {}
+                    label_map = {}
+                    colors_list = [
+                        "#4e79a7", "#f28e2b", "#e15759", "#76b7b2",
+                        "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
+                        "#9c755f", "#bab0ac", "#6baed6", "#fd8d3c",
+                        "#74c476", "#9e9ac8", "#e377c2", "#17becf",
+                        "#bcbd22", "#7f7f7f", "#d62728", "#1f77b4",
+                    ]
+                    c_idx = 0
+
+                    ax.set_xlim(-stock_length * 0.07, stock_length * 1.05)
+                    ax.set_ylim(-0.8, n - 0.2 + 0.8)
+                    ax.set_xlabel("Длина (мм)", fontsize=10)
+                    ax.set_yticks([])
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+                    ax.spines["left"].set_visible(False)
+
+                    for i, b in enumerate(page_bins):
+                        y = n - 1 - i
+                        global_idx = start + i + 1
+
+                        # Фон заготовки
+                        ax.add_patch(patches.FancyBboxPatch(
+                            (0, y - bar_height / 2), stock_length, bar_height,
+                            boxstyle="round,pad=0",
+                            linewidth=1.2, edgecolor="#555555", facecolor="#e8e8e8",
+                        ))
+
+                        # Припуски
+                        if margin_left > 0:
+                            ax.add_patch(patches.Rectangle(
+                                (0, y - bar_height / 2), margin_left, bar_height,
+                                linewidth=0.5, edgecolor="#999", facecolor="#cccccc",
+                                hatch="///", alpha=0.7,
+                            ))
+                        if margin_right > 0:
+                            ax.add_patch(patches.Rectangle(
+                                (stock_length - margin_right, y - bar_height / 2),
+                                margin_right, bar_height,
+                                linewidth=0.5, edgecolor="#999", facecolor="#cccccc",
+                                hatch="///", alpha=0.7,
+                            ))
+
+                        x_offset = margin_left
+                        for j, (name, length, piece_id) in enumerate(b["pieces"]):
+                            if j > 0 and kerf > 0:
+                                ax.add_patch(patches.Rectangle(
+                                    (x_offset, y - bar_height / 2), kerf, bar_height,
+                                    linewidth=0, facecolor="#ff4444", alpha=0.6,
+                                ))
+                                x_offset += kerf
+
+                            if piece_id not in color_map:
+                                color_map[piece_id] = colors_list[c_idx % len(colors_list)]
+                                c_idx += 1
+                                lbl = f"#{piece_id} {name}" if name else f"#{piece_id}"
+                                label_map[piece_id] = (lbl, color_map[piece_id])
+                            color = color_map[piece_id]
+
+                            ax.add_patch(patches.FancyBboxPatch(
+                                (x_offset, y - bar_height / 2), length, bar_height,
+                                boxstyle="round,pad=0",
+                                linewidth=0.8, edgecolor="#333", facecolor=color, alpha=0.88,
+                            ))
+
+                            fontsize = max(5.5, min(8.5, length / stock_length * 70))
+                            full_label = f"{name}\n{length:.0f}" if name else f"#{piece_id}\n{length:.0f}"
+                            short_label = f"#{piece_id}\n{length:.0f}"
+
+                            # Простая проверка помещается ли текст
+                            approx_char_w = stock_length / 120
+                            text_len = len(full_label.split("\n")[0])
+                            label = full_label if (text_len * approx_char_w) < length * 0.8 else short_label
+
+                            ax.text(
+                                x_offset + length / 2, y, label,
+                                ha="center", va="center",
+                                fontsize=fontsize, fontweight="bold", color="#ffffff",
+                            )
+                            x_offset += length
+
+                        remaining = b["remaining"]
+                        if remaining > stock_length * 0.03:
+                            ax.text(
+                                x_offset + remaining / 2, y,
+                                f"Ост.\n{remaining:.0f}",
+                                ha="center", va="center",
+                                fontsize=6.5, fontstyle="italic", color="#999999",
+                            )
+
+                        ax.text(
+                            -stock_length * 0.015, y,
+                            f"#{global_idx}", ha="right", va="center",
+                            fontsize=9, fontweight="bold", color="#444444",
+                        )
+
+                    # Заголовок страницы
+                    page_label = f" (стр. {page_num + 1})" if total_bins > max_rows_per_page else ""
+                    total_stock_all = len(bins) * stock_length
+                    total_waste_all = sum(bb["remaining"] for bb in bins)
+                    eff = ((total_stock_all - total_waste_all) / total_stock_all) * 100 if total_stock_all else 0
+
+                    ax.set_title(
+                        f"«{material_name}»  •  Заготовка: {stock_length:.0f} мм  •  "
+                        f"Штук: {len(bins)}  •  Эффективность: {eff:.1f}%{page_label}",
+                        fontsize=11, fontweight="bold", pad=12,
+                    )
+
+                    # Легенда
+                    legend_handles = [
+                        patches.Patch(facecolor=c, edgecolor="#333", label=lbl)
+                        for lbl, c in label_map.values()
+                    ]
+                    if margin_left > 0 or margin_right > 0:
+                        legend_handles.append(
+                            patches.Patch(facecolor="#cccccc", edgecolor="#999",
+                                          hatch="///", label="Припуск")
+                        )
+                    if kerf > 0:
+                        legend_handles.append(
+                            patches.Patch(facecolor="#ff4444", alpha=0.6,
+                                          edgecolor="none", label=f"Пропил ({kerf})")
+                        )
+                    legend_handles.append(
+                        patches.Patch(facecolor="#e8e8e8", edgecolor="#555", label="Остаток")
+                    )
+                    ax.legend(
+                        handles=legend_handles, loc="upper right",
+                        fontsize=7, framealpha=0.9, title="Изделия",
+                    )
+
+                    fig_vis.tight_layout()
+                    pdf.savefig(fig_vis)
+                    plt.close(fig_vis)
+                    page_num += 1
+
+            messagebox.showinfo("Готово", f"PDF сохранён:\n{filepath}")
+
+        except Exception as e:
+            messagebox.showerror("Ошибка экспорта", f"Не удалось сохранить PDF:\n{e}")
 
 
 # ─────────────────────────── Запуск ───────────────────────────
