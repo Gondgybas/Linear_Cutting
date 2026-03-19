@@ -940,17 +940,17 @@ class CuttingApp:
 
     def _export_pdf(self):
         """Экспорт отчёта и визуализации в PDF."""
-        # Проверяем, что расчёт уже выполнен
         if not self.chart.fig or not self.chart.mpl_canvas:
             messagebox.showwarning("Внимание", "Сначала выполните расчёт раскроя!")
             return
 
-        # Диалог сохранения
+        material_name = self.material_name_var.get().strip() or "Материал"
+
         filepath = filedialog.asksaveasfilename(
             title="Сохранить отчёт в PDF",
             defaultextension=".pdf",
             filetypes=[("PDF файлы", "*.pdf"), ("Все файлы", "*.*")],
-            initialfile="раскрой.pdf",
+            initialfile=f"{material_name}.pdf",
         )
         if not filepath:
             return
@@ -977,16 +977,6 @@ class CuttingApp:
                     fontsize=18, fontweight="bold",
                 )
 
-                # Линия под заголовком
-                fig_report.add_artist(
-                    patches.FancyBboxPatch(
-                        (0.05, 0.935), 0.9, 0.002,
-                        boxstyle="round,pad=0",
-                        facecolor="#4e79a7", edgecolor="none",
-                        transform=fig_report.transFigure,
-                    )
-                )
-
                 # Параметры
                 params_text = (
                     f"Длина заготовки: {stock_length:.0f} мм    "
@@ -995,7 +985,7 @@ class CuttingApp:
                     f"Пропил: {kerf:.1f} мм"
                 )
                 fig_report.text(
-                    0.5, 0.915, params_text,
+                    0.5, 0.93, params_text,
                     ha="center", va="top",
                     fontsize=10, color="#555555",
                 )
