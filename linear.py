@@ -530,9 +530,7 @@ class CuttingApp:
 
     def _add_part(self):
         name = self.part_name_var.get().strip()
-        if not name:
-            messagebox.showwarning("Внимание", "Введите название изделия!")
-            return
+        # Если название пустое — оставляем пустым, это допустимо
         try:
             length = float(self.part_length_var.get())
             if length <= 0:
@@ -551,8 +549,11 @@ class CuttingApp:
         part_id = self.next_id
         self.next_id += 1
 
-        self.parts.append({"id": part_id, "name": name, "length": length, "qty": qty})
-        self.tree.insert("", tk.END, values=(f"#{part_id}", name, length, qty))
+        # Если имя пустое — в таблице и данных будет пустая строка
+        display_name = name if name else ""
+
+        self.parts.append({"id": part_id, "name": display_name, "length": length, "qty": qty})
+        self.tree.insert("", tk.END, values=(f"#{part_id}", display_name, length, qty))
 
         self.part_name_var.set("")
         self.part_length_var.set("")
