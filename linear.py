@@ -17,24 +17,22 @@ import matplotlib.patches as patches
 # ─────────────────────────── Алгоритм ───────────────────────────
 
 def ffd_cutting(stock_length, parts):
-    """First Fit Decreasing для линейного раскроя."""
+    """First Fit Decreasing для линейного раскроя.
+    Возвращает (bins, oversized) — раскрой и список не поместившихся."""
     pieces = []
     for p in parts:
         for _ in range(p["qty"]):
             pieces.append((p["name"], p["length"], p["id"]))
 
+    # Отделяем те, что длиннее заготовки
     oversized = [p for p in pieces if p[1] > stock_length]
-    if oversized:
-        names = set(f"«{n}» ({l} мм)" for n, l, _ in oversized)
-        raise ValueError(
-            f"Изделия длиннее заготовки ({stock_length} мм):\n"
-            + "\n".join(f"  • {n}" for n in names)
-        )
+    fitting = [p for p in pieces if p[1] <= stock_length]
 
-    pieces.sort(key=lambda x: x[1], reverse=True)
+    # Сортируем по убыванию длины (FFD)
+    fitting.sort(key=lambda x: x[1], reverse=True)
     bins = []
 
-    for piece_name, piece_len, piece_id in pieces:
+    for piece_name, piece_len, piece_id in fitting:
         placed = False
         for b in bins:
             if b["remaining"] >= piece_len:
@@ -47,7 +45,8 @@ def ffd_cutting(stock_length, parts):
                 "remaining": stock_length - piece_len,
                 "pieces": [(piece_name, piece_len, piece_id)],
             })
-    return bins
+
+    return bins, oversized
 
 
 # ─────────────────────── Окно редактирования ─────────────────────
@@ -617,20 +616,36 @@ class CuttingApp:
 
         material_name = self.material_name_var.get().strip() or "Материал"
 
-        try:
-            bins = ffd_cutting(stock_length, self.parts)
-        except ValueError as e:
-            messagebox.showerror("Ошибка", str(e))
+        bins, oversized = ffd_cutting(stock_length, self.parts)
+
+        if not bins and oversized:
+            messagebox.showerror(
+                "Ошибка",
+                "Ни одно изделие не помещается в заготовку!"
+            )
             return
 
         self.chart.draw(material_name, stock_length, bins)
-        self._fill_report(material_name, stock_length, bins)
+        self._fill_report(material_name, stock_length, bins, oversized)
+
+        # Предупреждение о не поместившихся изделиях
+        if oversized:
+            lines = []
+            for name, length, pid in oversized:
+                label = f"#{pid} {name}" if name else f"#{pid}"
+                lines.append(f"  • {label} — {length:.0f} мм")
+            messagebox.showwarning(
+                "Внимание: не все изделия разложены",
+                f"Следующие изделия длиннее заготовки ({stock_length:.0f} мм) "
+                f"и не были включены в раскрой:\n\n" + "\n".join(lines)
+            )
 
     # ── Отчёт ──
 
-    def _fill_report(self, material_name, stock_length, bins):
+    def _fill_report(self, material_name, stock_length, bins, oversized=None):
         total_pieces = sum(p["qty"] for p in self.parts)
         total_needed = sum(p["length"] * p["qty"] for p in self.parts)
+        placed_count = sum(len(b["pieces"]) for b in bins)
         total_stock = len(bins) * stock_length
         total_waste = sum(b["remaining"] for b in bins)
         eff = (total_needed / total_stock) * 100 if total_stock else 0
@@ -639,13 +654,23 @@ class CuttingApp:
             f"  Материал:         {material_name}",
             f"  Длина заготовки:  {stock_length:.0f} мм",
             f"  Всего изделий:    {total_pieces} шт.",
+            f"  Разложено:        {placed_count} шт.",
             f"  Заготовок нужно:  {len(bins)} шт.",
             f"  Общий расход:     {total_stock:.0f} мм",
             f"  Полезная длина:   {total_needed:.0f} мм",
             f"  Общий отход:      {total_waste:.0f} мм",
             f"  Эффективность:    {eff:.1f}%",
-            "",
         ]
+
+        # Блок «не разложено»
+        if oversized:
+            lines.append("")
+            lines.append(f"  ⚠ НЕ РАЗЛОЖЕНО ({len(oversized)} шт.):")
+            for name, length, pid in oversized:
+                label = f"#{pid} {name}" if name else f"#{pid}"
+                lines.append(f"    • {label} — {length:.0f} мм (длиннее заготовки)")
+
+        lines.append("")
         for i, b in enumerate(bins, 1):
             parts_str = " + ".join(f"#{pid} {n}({l:.0f})" for n, l, pid in b["pieces"])
             lines.append(f"  Заготовка #{i}: {parts_str}  →  остаток {b['remaining']:.0f} мм")
