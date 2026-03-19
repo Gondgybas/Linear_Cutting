@@ -122,6 +122,158 @@ class EditPartDialog(tk.Toplevel):
         self.result = (name, length, qty)
         self.destroy()
 
+class ImportDialog(tk.Toplevel):
+    """Модальное окно для импорта изделий из текста."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Импорт изделий")
+        self.resizable(True, True)
+        self.grab_set()
+        self.focus_set()
+
+        self.result = None
+
+        w, h = 520, 480
+        x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(400, 350)
+
+        frame = ttk.Frame(self, padding=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Используем grid для точного контроля размеров
+        frame.rowconfigure(1, weight=1)  # текстовое поле растягивается
+        frame.columnconfigure(0, weight=1)
+
+        # Инструкция (row 0) — фиксированная высота
+        hint = ttk.Label(frame, text=(
+            "Формат: [Название] <длина> <количество>\n"
+            "Каждая строка — одно изделие. Разделитель — пробел.\n"
+            "Два последних числа — длина и количество, всё остальное — название.\n\n"
+            "Примеры:\n"
+            "  Стойка каркасная 1500 4\n"
+            "  Перекладина 800 6\n"
+            "  1200 3"
+        ), justify=tk.LEFT, foreground="#555555")
+        hint.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+        # Текстовое поле (row 1) — растягивается
+        text_frame = ttk.Frame(frame)
+        text_frame.grid(row=1, column=0, sticky="nsew")
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+
+        self.text = tk.Text(
+            text_frame, font=("Consolas", 11),
+            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#ffffff",
+            relief=tk.FLAT, wrap=tk.NONE, undo=True,
+        )
+        scroll_y = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.text.yview)
+        scroll_x = ttk.Scrollbar(text_frame, orient=tk.HORIZONTAL, command=self.text.xview)
+        self.text.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+
+        self.text.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+
+        self.text.focus_set()
+
+        # Статус-строка (row 2) — фиксированная
+        self.status_var = tk.StringVar(value="")
+        status_label = ttk.Label(frame, textvariable=self.status_var, foreground="#cc0000")
+        status_label.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+
+        # Кнопки (row 3) — фиксированная
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+
+        ttk.Button(btn_row, text="➕ Добавить", command=self._import).pack(
+            side=tk.LEFT, padx=(0, 10)
+        )
+        ttk.Button(btn_row, text="❌ Отмена", command=self.destroy).pack(side=tk.LEFT)
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _parse_line(self, line):
+        """
+        Парсит строку: два последних токена-числа = длина и количество,
+        всё что перед ними = название (может быть пустым).
+        Поддерживает запятую как десятичный разделитель (10,5 = 10.5).
+        """
+        line = line.strip()
+        if not line:
+            return None
+
+        tokens = line.split()
+
+        def to_float(s):
+            return float(s.replace(",", "."))
+
+        def to_int(s):
+            return int(to_float(s))
+
+        if len(tokens) < 2:
+            try:
+                length = to_float(tokens[0])
+                return {"name": "", "length": length, "qty": 1}
+            except ValueError:
+                raise ValueError(f"Не удалось распознать: «{line}»")
+
+        # Пытаемся взять два последних как числа
+        try:
+            qty = to_int(tokens[-1])
+            length = to_float(tokens[-2])
+            name = " ".join(tokens[:-2]).strip()
+            if length <= 0 or qty <= 0:
+                raise ValueError
+            return {"name": name, "length": length, "qty": qty}
+        except (ValueError, IndexError):
+            pass
+
+        # Может последний токен — только длина
+        try:
+            length = to_float(tokens[-1])
+            if length <= 0:
+                raise ValueError
+            name = " ".join(tokens[:-1]).strip()
+            return {"name": name, "length": length, "qty": 1}
+        except ValueError:
+            raise ValueError(f"Не удалось распознать: «{line}»")
+
+    def _import(self):
+        raw = self.text.get("1.0", tk.END)
+        lines = raw.strip().splitlines()
+
+        if not lines or all(not l.strip() for l in lines):
+            self.status_var.set("⚠ Введите хотя бы одну строку!")
+            return
+
+        results = []
+        errors = []
+
+        for i, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                parsed = self._parse_line(line)
+                if parsed:
+                    results.append(parsed)
+            except ValueError as e:
+                errors.append(f"Строка {i}: {e}")
+
+        if errors:
+            self.status_var.set("\n".join(errors))
+            return
+
+        if not results:
+            self.status_var.set("⚠ Не найдено ни одного изделия!")
+            return
+
+        self.result = results
+        self.destroy()
+
 
 # ──────────────── Прокручиваемый Canvas с matplotlib ────────────────
 
@@ -472,6 +624,10 @@ class CuttingApp:
             side=tk.LEFT, padx=(5, 0)
         )
 
+        ttk.Button(btn_row, text="📥 Импорт", command=self._import_parts).pack(
+            side=tk.LEFT, padx=(5, 0)
+        )
+
         # Таблица с колонкой №
         table_frame = ttk.LabelFrame(left, text=" 📋 Список изделий (2×клик — редактировать) ", padding=5)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
@@ -550,6 +706,28 @@ class CuttingApp:
         self.part_name_var.set("")
         self.part_length_var.set("")
         self.part_qty_var.set("1")
+
+    def _import_parts(self):
+        """Открыть окно импорта изделий."""
+        dialog = ImportDialog(self.root)
+        self.root.wait_window(dialog)
+
+        if dialog.result is not None:
+            count = 0
+            for item in dialog.result:
+                part_id = self.next_id
+                self.next_id += 1
+                self.parts.append({
+                    "id": part_id,
+                    "name": item["name"],
+                    "length": item["length"],
+                    "qty": item["qty"],
+                })
+                self.tree.insert("", tk.END, values=(
+                    f"#{part_id}", item["name"], item["length"], item["qty"]
+                ))
+                count += 1
+            messagebox.showinfo("Импорт", f"Добавлено изделий: {count}")
 
     # ── Редактирование ──
 
