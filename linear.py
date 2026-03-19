@@ -16,33 +16,32 @@ import matplotlib.patches as patches
 
 # ─────────────────────────── Алгоритм ───────────────────────────
 
-def ffd_cutting(stock_length, parts):
-    """First Fit Decreasing для линейного раскроя.
-    Возвращает (bins, oversized) — раскрой и список не поместившихся."""
+def ffd_cutting(usable_length, parts, kerf=0):
+    """First Fit Decreasing для линейного раскроя с учётом ширины пропила."""
     pieces = []
     for p in parts:
         for _ in range(p["qty"]):
             pieces.append((p["name"], p["length"], p["id"]))
 
-    # Отделяем те, что длиннее заготовки
-    oversized = [p for p in pieces if p[1] > stock_length]
-    fitting = [p for p in pieces if p[1] <= stock_length]
+    oversized = [p for p in pieces if p[1] > usable_length]
+    fitting = [p for p in pieces if p[1] <= usable_length]
 
-    # Сортируем по убыванию длины (FFD)
     fitting.sort(key=lambda x: x[1], reverse=True)
     bins = []
 
     for piece_name, piece_len, piece_id in fitting:
         placed = False
         for b in bins:
-            if b["remaining"] >= piece_len:
+            # Если уже есть изделия — нужен пропил перед новым
+            needed = piece_len + (kerf if b["pieces"] else 0)
+            if b["remaining"] >= needed:
                 b["pieces"].append((piece_name, piece_len, piece_id))
-                b["remaining"] -= piece_len
+                b["remaining"] -= needed
                 placed = True
                 break
         if not placed:
             bins.append({
-                "remaining": stock_length - piece_len,
+                "remaining": usable_length - piece_len,
                 "pieces": [(piece_name, piece_len, piece_id)],
             })
 
@@ -370,8 +369,8 @@ class ScrollableChart(ttk.Frame):
         p1 = inv.transform((bb.width, 0))
         return p1[0] - p0[0]
 
-    def draw(self, material_name, stock_length, bins):
-        """Отрисовать карту раскроя с фиксированной высотой строк."""
+    def draw(self, material_name, stock_length, bins, margin_left=0, margin_right=0, kerf=0):
+        """Отрисовать карту раскроя с припусками и пропилами."""
         self.clear()
 
         n = len(bins)
@@ -386,9 +385,8 @@ class ScrollableChart(ttk.Frame):
 
         bar_height = 0.6
 
-        # Цвет привязан к id изделия, а не к названию
-        color_map = {}  # piece_id -> color
-        label_map = {}  # piece_id -> (display_name, color) для легенды
+        color_map = {}
+        label_map = {}
         colors = [
             "#4e79a7", "#f28e2b", "#e15759", "#76b7b2",
             "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
@@ -416,19 +414,43 @@ class ScrollableChart(ttk.Frame):
         for i, b in enumerate(bins):
             y = n - 1 - i
 
+            # Полная заготовка (серый фон)
             ax.add_patch(patches.FancyBboxPatch(
                 (0, y - bar_height / 2), stock_length, bar_height,
                 boxstyle="round,pad=0",
                 linewidth=1.2, edgecolor="#555555", facecolor="#e8e8e8",
             ))
 
-            x_offset = 0.0
-            for name, length, piece_id in b["pieces"]:
-                # Цвет по id
+            # Припуск слева (штриховка)
+            if margin_left > 0:
+                ax.add_patch(patches.Rectangle(
+                    (0, y - bar_height / 2), margin_left, bar_height,
+                    linewidth=0.5, edgecolor="#999", facecolor="#cccccc",
+                    hatch="///", alpha=0.7,
+                ))
+
+            # Припуск справа (штриховка)
+            if margin_right > 0:
+                ax.add_patch(patches.Rectangle(
+                    (stock_length - margin_right, y - bar_height / 2),
+                    margin_right, bar_height,
+                    linewidth=0.5, edgecolor="#999", facecolor="#cccccc",
+                    hatch="///", alpha=0.7,
+                ))
+
+            x_offset = margin_left
+            for j, (name, length, piece_id) in enumerate(b["pieces"]):
+                # Пропил перед изделием (кроме первого)
+                if j > 0 and kerf > 0:
+                    ax.add_patch(patches.Rectangle(
+                        (x_offset, y - bar_height / 2), kerf, bar_height,
+                        linewidth=0, facecolor="#ff4444", alpha=0.6,
+                    ))
+                    x_offset += kerf
+
                 if piece_id not in color_map:
                     color_map[piece_id] = colors[color_idx % len(colors)]
                     color_idx += 1
-                    # Для легенды: "#1 Название" или просто "#1"
                     legend_label = f"#{piece_id} {name}" if name else f"#{piece_id}"
                     label_map[piece_id] = (legend_label, color_map[piece_id])
                 color = color_map[piece_id]
@@ -472,16 +494,10 @@ class ScrollableChart(ttk.Frame):
 
         # Умные подписи
         PADDING_FACTOR = 1.3
-
         for item in text_items:
             full_w = self._get_text_width(ax, item["full"].split("\n")[0], item["fontsize"])
             full_w *= PADDING_FACTOR
-
-            if full_w <= item["width"]:
-                label = item["full"]
-            else:
-                label = item["short"]
-
+            label = item["full"] if full_w <= item["width"] else item["short"]
             ax.text(
                 item["x"], item["y"], label,
                 ha="center", va="center",
@@ -499,11 +515,19 @@ class ScrollableChart(ttk.Frame):
             fontsize=11, fontweight="bold", pad=12,
         )
 
-        # Легенда по id
+        # Легенда
         legend_handles = [
             patches.Patch(facecolor=c, edgecolor="#333", label=lbl)
             for lbl, c in label_map.values()
         ]
+        if margin_left > 0 or margin_right > 0:
+            legend_handles.append(
+                patches.Patch(facecolor="#cccccc", edgecolor="#999", hatch="///", label="Припуск")
+            )
+        if kerf > 0:
+            legend_handles.append(
+                patches.Patch(facecolor="#ff4444", alpha=0.6, edgecolor="none", label=f"Пропил ({kerf})")
+            )
         legend_handles.append(
             patches.Patch(facecolor="#e8e8e8", edgecolor="#555", label="Остаток")
         )
@@ -573,7 +597,7 @@ class CuttingApp:
         left = ttk.Frame(main, width=400)
         main.add(left, weight=0)
 
-        # Материал
+        # --- Материал ---
         mat_frame = ttk.LabelFrame(left, text=" 📦 Материал ", padding=10)
         mat_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
 
@@ -587,6 +611,24 @@ class CuttingApp:
         self.stock_length_var = tk.StringVar(value="6000")
         ttk.Entry(mat_frame, textvariable=self.stock_length_var, width=28).grid(
             row=1, column=1, padx=(5, 0), pady=3
+        )
+
+        ttk.Label(mat_frame, text="Припуск слева (мм):").grid(row=2, column=0, sticky=tk.W, pady=3)
+        self.margin_left_var = tk.StringVar(value="0")
+        ttk.Entry(mat_frame, textvariable=self.margin_left_var, width=28).grid(
+            row=2, column=1, padx=(5, 0), pady=3
+        )
+
+        ttk.Label(mat_frame, text="Припуск справа (мм):").grid(row=3, column=0, sticky=tk.W, pady=3)
+        self.margin_right_var = tk.StringVar(value="0")
+        ttk.Entry(mat_frame, textvariable=self.margin_right_var, width=28).grid(
+            row=3, column=1, padx=(5, 0), pady=3
+        )
+
+        ttk.Label(mat_frame, text="Ширина пропила (мм):").grid(row=4, column=0, sticky=tk.W, pady=3)
+        self.kerf_var = tk.StringVar(value="0")
+        ttk.Entry(mat_frame, textvariable=self.kerf_var, width=28).grid(
+            row=4, column=1, padx=(5, 0), pady=3
         )
 
         # Добавление изделия
@@ -779,11 +821,40 @@ class CuttingApp:
 
     def _calculate(self):
         try:
-            stock_length = float(self.stock_length_var.get())
+            stock_length = float(self.stock_length_var.get().replace(",", "."))
             if stock_length <= 0:
                 raise ValueError
         except ValueError:
             messagebox.showerror("Ошибка", "Введите корректную длину заготовки!")
+            return
+
+        try:
+            margin_left = float(self.margin_left_var.get().replace(",", "."))
+            if margin_left < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректный припуск слева!")
+            return
+
+        try:
+            margin_right = float(self.margin_right_var.get().replace(",", "."))
+            if margin_right < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректный припуск справа!")
+            return
+
+        try:
+            kerf = float(self.kerf_var.get().replace(",", "."))
+            if kerf < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректную ширину пропила!")
+            return
+
+        usable_length = stock_length - margin_left - margin_right
+        if usable_length <= 0:
+            messagebox.showerror("Ошибка", "Припуски больше длины заготовки!")
             return
 
         if not self.parts:
@@ -792,7 +863,7 @@ class CuttingApp:
 
         material_name = self.material_name_var.get().strip() or "Материал"
 
-        bins, oversized = ffd_cutting(stock_length, self.parts)
+        bins, oversized = ffd_cutting(usable_length, self.parts, kerf)
 
         if not bins and oversized:
             messagebox.showerror(
@@ -801,10 +872,9 @@ class CuttingApp:
             )
             return
 
-        self.chart.draw(material_name, stock_length, bins)
-        self._fill_report(material_name, stock_length, bins, oversized)
+        self.chart.draw(material_name, stock_length, bins, margin_left, margin_right, kerf)
+        self._fill_report(material_name, stock_length, bins, oversized, margin_left, margin_right, kerf)
 
-        # Предупреждение о не поместившихся изделиях
         if oversized:
             lines = []
             for name, length, pid in oversized:
@@ -812,39 +882,46 @@ class CuttingApp:
                 lines.append(f"  • {label} — {length:.0f} мм")
             messagebox.showwarning(
                 "Внимание: не все изделия разложены",
-                f"Следующие изделия длиннее заготовки ({stock_length:.0f} мм) "
+                f"Следующие изделия длиннее рабочей зоны ({usable_length:.0f} мм) "
                 f"и не были включены в раскрой:\n\n" + "\n".join(lines)
             )
 
     # ── Отчёт ──
 
-    def _fill_report(self, material_name, stock_length, bins, oversized=None):
+    def _fill_report(self, material_name, stock_length, bins, oversized=None,
+                     margin_left=0, margin_right=0, kerf=0):
+        usable_length = stock_length - margin_left - margin_right
         total_pieces = sum(p["qty"] for p in self.parts)
-        total_needed = sum(p["length"] * p["qty"] for p in self.parts)
         placed_count = sum(len(b["pieces"]) for b in bins)
+        total_needed = sum(p["length"] * p["qty"] for p in self.parts)
         total_stock = len(bins) * stock_length
         total_waste = sum(b["remaining"] for b in bins)
+        total_kerfs = sum(max(0, len(b["pieces"]) - 1) * kerf for b in bins)
+        total_margins = len(bins) * (margin_left + margin_right)
         eff = (total_needed / total_stock) * 100 if total_stock else 0
 
         lines = [
             f"  Материал:         {material_name}",
             f"  Длина заготовки:  {stock_length:.0f} мм",
+            f"  Рабочая зона:     {usable_length:.0f} мм  (припуск Л={margin_left:.0f} П={margin_right:.0f})",
+            f"  Ширина пропила:   {kerf:.1f} мм",
             f"  Всего изделий:    {total_pieces} шт.",
             f"  Разложено:        {placed_count} шт.",
             f"  Заготовок нужно:  {len(bins)} шт.",
             f"  Общий расход:     {total_stock:.0f} мм",
             f"  Полезная длина:   {total_needed:.0f} мм",
+            f"  На пропилы:       {total_kerfs:.0f} мм",
+            f"  На припуски:      {total_margins:.0f} мм",
             f"  Общий отход:      {total_waste:.0f} мм",
             f"  Эффективность:    {eff:.1f}%",
         ]
 
-        # Блок «не разложено»
         if oversized:
             lines.append("")
             lines.append(f"  ⚠ НЕ РАЗЛОЖЕНО ({len(oversized)} шт.):")
             for name, length, pid in oversized:
                 label = f"#{pid} {name}" if name else f"#{pid}"
-                lines.append(f"    • {label} — {length:.0f} мм (длиннее заготовки)")
+                lines.append(f"    • {label} — {length:.0f} мм (длиннее рабочей зоны)")
 
         lines.append("")
         for i, b in enumerate(bins, 1):
