@@ -237,7 +237,9 @@ class ScrollableChart(ttk.Frame):
 
         bar_height = 0.6
 
-        color_map = {}
+        # Цвет привязан к id изделия, а не к названию
+        color_map = {}  # piece_id -> color
+        label_map = {}  # piece_id -> (display_name, color) для легенды
         colors = [
             "#4e79a7", "#f28e2b", "#e15759", "#76b7b2",
             "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
@@ -247,7 +249,6 @@ class ScrollableChart(ttk.Frame):
         ]
         color_idx = 0
 
-        # Настраиваем оси ДО отрисовки текста (нужно для расчёта ширины)
         ax.set_xlim(-stock_length * 0.07, stock_length * 1.05)
         ax.set_ylim(-0.8, n - 0.2 + 0.8)
         ax.set_xlabel("Длина (мм)", fontsize=10)
@@ -258,11 +259,9 @@ class ScrollableChart(ttk.Frame):
 
         self.fig.tight_layout()
 
-        # Нужен предварительный рендер, чтобы renderer существовал
         self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=self.inner_frame)
         self.mpl_canvas.draw()
 
-        # Собираем все тексты для отложенной отрисовки
         text_items = []
 
         for i, b in enumerate(bins):
@@ -276,10 +275,14 @@ class ScrollableChart(ttk.Frame):
 
             x_offset = 0.0
             for name, length, piece_id in b["pieces"]:
-                if name not in color_map:
-                    color_map[name] = colors[color_idx % len(colors)]
+                # Цвет по id
+                if piece_id not in color_map:
+                    color_map[piece_id] = colors[color_idx % len(colors)]
                     color_idx += 1
-                color = color_map[name]
+                    # Для легенды: "#1 Название" или просто "#1"
+                    legend_label = f"#{piece_id} {name}" if name else f"#{piece_id}"
+                    label_map[piece_id] = (legend_label, color_map[piece_id])
+                color = color_map[piece_id]
 
                 ax.add_patch(patches.FancyBboxPatch(
                     (x_offset, y - bar_height / 2), length, bar_height,
@@ -289,8 +292,7 @@ class ScrollableChart(ttk.Frame):
 
                 fontsize = max(5.5, min(8.5, length / stock_length * 70))
 
-                # Полная подпись и короткая (#id)
-                full_label = f"{name}\n{length:.0f}"
+                full_label = f"{name}\n{length:.0f}" if name else f"#{piece_id}\n{length:.0f}"
                 short_label = f"#{piece_id}\n{length:.0f}"
 
                 text_items.append({
@@ -319,8 +321,8 @@ class ScrollableChart(ttk.Frame):
                 fontsize=9, fontweight="bold", color="#444444",
             )
 
-        # Умные подписи: проверяем помещается ли название
-        PADDING_FACTOR = 1.3  # запас, чтобы текст не впритык к краям
+        # Умные подписи
+        PADDING_FACTOR = 1.3
 
         for item in text_items:
             full_w = self._get_text_width(ax, item["full"].split("\n")[0], item["fontsize"])
@@ -348,17 +350,10 @@ class ScrollableChart(ttk.Frame):
             fontsize=11, fontweight="bold", pad=12,
         )
 
-        # Легенда
+        # Легенда по id
         legend_handles = [
-            patches.Patch(facecolor=c, edgecolor="#333", label=f"#{pid} {nm}")
-            for nm, (c, pid) in {
-                n: (color_map[n], next(
-                    p["id"] for p in _parts_ref if p["name"] == n
-                )) for n in color_map
-            }.items()
-        ] if False else [
-            patches.Patch(facecolor=c, edgecolor="#333", label=nm)
-            for nm, c in color_map.items()
+            patches.Patch(facecolor=c, edgecolor="#333", label=lbl)
+            for lbl, c in label_map.values()
         ]
         legend_handles.append(
             patches.Patch(facecolor="#e8e8e8", edgecolor="#555", label="Остаток")
