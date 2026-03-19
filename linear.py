@@ -678,9 +678,8 @@ class CuttingApp:
 
     def _add_part(self):
         name = self.part_name_var.get().strip()
-        # Если название пустое — оставляем пустым, это допустимо
         try:
-            length = float(self.part_length_var.get())
+            length = float(self.part_length_var.get().replace(",", "."))
             if length <= 0:
                 raise ValueError
         except ValueError:
@@ -697,7 +696,6 @@ class CuttingApp:
         part_id = self.next_id
         self.next_id += 1
 
-        # Если имя пустое — в таблице и данных будет пустая строка
         display_name = name if name else ""
 
         self.parts.append({"id": part_id, "name": display_name, "length": length, "qty": qty})
