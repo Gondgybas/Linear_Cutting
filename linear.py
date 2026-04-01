@@ -50,6 +50,30 @@ def ffd_cutting(usable_length, parts, kerf=0):
 
     return bins, oversized
 
+def group_bins(bins):
+    """
+    Группирует одинаковые заготовки (с идентичным набором изделий).
+    Возвращает список: [{"bin": bin_data, "count": N, "indices": [1,2,3...]}, ...]
+    """
+    groups = []
+    for i, b in enumerate(bins):
+        # Ключ — кортеж из (piece_id, length) каждого изделия + остаток
+        key = tuple((pid, l) for _, l, pid in b["pieces"]) + (("rem", b["remaining"]),)
+        found = False
+        for g in groups:
+            if g["key"] == key:
+                g["count"] += 1
+                g["indices"].append(i + 1)
+                found = True
+                break
+        if not found:
+            groups.append({
+                "key": key,
+                "bin": b,
+                "count": 1,
+                "indices": [i + 1],
+            })
+    return groups
 
 # ─────────────────────── Окно редактирования ─────────────────────
 
@@ -373,10 +397,12 @@ class ScrollableChart(ttk.Frame):
         return p1[0] - p0[0]
 
     def draw(self, material_name, stock_length, bins, margin_left=0, margin_right=0, kerf=0):
-        """Отрисовать карту раскроя с припусками и пропилами."""
+        """Отрисовать карту раскроя с группировкой одинаковых заготовок."""
         self.clear()
 
-        n = len(bins)
+        groups = group_bins(bins)
+        n = len(groups)
+
         canvas_width = max(self.tk_canvas.winfo_width(), 600)
         fig_w = canvas_width / self.DPI
         fig_h_px = self.PADDING_TOP_PX + n * self.ROW_HEIGHT_PX + self.PADDING_BOTTOM_PX
@@ -399,7 +425,7 @@ class ScrollableChart(ttk.Frame):
         ]
         color_idx = 0
 
-        ax.set_xlim(-stock_length * 0.07, stock_length * 1.05)
+        ax.set_xlim(-stock_length * 0.12, stock_length * 1.05)
         ax.set_ylim(-0.8, n - 0.2 + 0.8)
         ax.set_xlabel("Длина (мм)", fontsize=10)
         ax.set_yticks([])
@@ -414,25 +440,26 @@ class ScrollableChart(ttk.Frame):
 
         text_items = []
 
-        for i, b in enumerate(bins):
+        for i, g in enumerate(groups):
+            b = g["bin"]
+            count = g["count"]
+            indices = g["indices"]
             y = n - 1 - i
 
-            # Полная заготовка (серый фон)
+            # Фон заготовки
             ax.add_patch(patches.FancyBboxPatch(
                 (0, y - bar_height / 2), stock_length, bar_height,
                 boxstyle="round,pad=0",
                 linewidth=1.2, edgecolor="#555555", facecolor="#e8e8e8",
             ))
 
-            # Припуск слева (штриховка)
+            # Припуски
             if margin_left > 0:
                 ax.add_patch(patches.Rectangle(
                     (0, y - bar_height / 2), margin_left, bar_height,
                     linewidth=0.5, edgecolor="#999", facecolor="#cccccc",
                     hatch="///", alpha=0.7,
                 ))
-
-            # Припуск справа (штриховка)
             if margin_right > 0:
                 ax.add_patch(patches.Rectangle(
                     (stock_length - margin_right, y - bar_height / 2),
@@ -443,7 +470,6 @@ class ScrollableChart(ttk.Frame):
 
             x_offset = margin_left
             for j, (name, length, piece_id) in enumerate(b["pieces"]):
-                # Пропил перед изделием (кроме первого)
                 if j > 0 and kerf > 0:
                     ax.add_patch(patches.Rectangle(
                         (x_offset, y - bar_height / 2), kerf, bar_height,
@@ -489,10 +515,23 @@ class ScrollableChart(ttk.Frame):
                     fontsize=6.5, fontstyle="italic", color="#999999",
                 )
 
+            # Левая подпись: номера + количество
+            if count > 1:
+                # Сокращаем список номеров если слишком длинный
+                if len(indices) <= 3:
+                    idx_str = ",".join(str(x) for x in indices)
+                else:
+                    idx_str = f"{indices[0]}–{indices[-1]}"
+                left_label = f"×{count}\n(#{idx_str})"
+            else:
+                left_label = f"#{indices[0]}"
+
             ax.text(
                 -stock_length * 0.015, y,
-                f"#{i + 1}", ha="right", va="center",
-                fontsize=9, fontweight="bold", color="#444444",
+                left_label, ha="right", va="center",
+                fontsize=8 if count > 1 else 9,
+                fontweight="bold",
+                color="#cc6600" if count > 1 else "#444444",
             )
 
         # Умные подписи
@@ -514,7 +553,7 @@ class ScrollableChart(ttk.Frame):
 
         ax.set_title(
             f"«{material_name}»  •  Заготовка: {stock_length:.0f} мм  •  "
-            f"Штук: {len(bins)}  •  Эффективность: {eff:.1f}%",
+            f"Штук: {len(bins)}  •  Уник. схем: {n}  •  Эффективность: {eff:.1f}%",
             fontsize=11, fontweight="bold", pad=12,
         )
 
@@ -908,6 +947,8 @@ class CuttingApp:
         total_margins = len(bins) * (margin_left + margin_right)
         eff = (total_needed / total_stock) * 100 if total_stock else 0
 
+        groups = group_bins(bins)
+
         lines = [
             f"  Материал:         {material_name}",
             f"  Длина заготовки:  {stock_length:.0f} мм",
@@ -915,7 +956,7 @@ class CuttingApp:
             f"  Ширина пропила:   {kerf:.1f} мм",
             f"  Всего изделий:    {total_pieces} шт.",
             f"  Разложено:        {placed_count} шт.",
-            f"  Заготовок нужно:  {len(bins)} шт.",
+            f"  Заготовок нужно:  {len(bins)} шт.  (уник. схем: {len(groups)})",
             f"  Общий расход:     {total_stock:.0f} мм",
             f"  Полезная длина:   {total_needed:.0f} мм",
             f"  На пропилы:       {total_kerfs:.0f} мм",
@@ -932,9 +973,20 @@ class CuttingApp:
                 lines.append(f"    • {label} — {length:.0f} мм (длиннее рабочей зоны)")
 
         lines.append("")
-        for i, b in enumerate(bins, 1):
+        for g in groups:
+            b = g["bin"]
+            count = g["count"]
+            indices = g["indices"]
             parts_str = " + ".join(f"#{pid} {n}({l:.0f})" for n, l, pid in b["pieces"])
-            lines.append(f"  Заготовка #{i}: {parts_str}  →  остаток {b['remaining']:.0f} мм")
+
+            if count > 1:
+                if len(indices) <= 4:
+                    idx_str = ", ".join(f"#{x}" for x in indices)
+                else:
+                    idx_str = f"#{indices[0]}–#{indices[-1]}"
+                lines.append(f"  ×{count} ({idx_str}): {parts_str}  →  остаток {b['remaining']:.0f} мм")
+            else:
+                lines.append(f"  Заготовка #{indices[0]}: {parts_str}  →  остаток {b['remaining']:.0f} мм")
 
         self.report_text.delete("1.0", tk.END)
         self.report_text.insert("1.0", "\n".join(lines))
