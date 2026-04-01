@@ -943,7 +943,8 @@ class CuttingApp:
         total_needed = sum(p["length"] * p["qty"] for p in self.parts)
         total_stock = len(bins) * stock_length
         total_waste = sum(b["remaining"] for b in bins)
-        total_kerfs = sum(max(0, len(b["pieces"]) - 1) * kerf for b in bins)
+        total_kerfs_count = sum(max(0, len(b["pieces"]) - 1) for b in bins)
+        total_kerfs_mm = total_kerfs_count * kerf
         total_margins = len(bins) * (margin_left + margin_right)
         eff = (total_needed / total_stock) * 100 if total_stock else 0
 
@@ -951,7 +952,7 @@ class CuttingApp:
 
         lines = [
             f"  Материал:         {material_name}",
-            f"  Длина заготовки:  {stock_length:.0f} мм",
+            f"  Дл��на заготовки:  {stock_length:.0f} мм",
             f"  Рабочая зона:     {usable_length:.0f} мм  (припуск Л={margin_left:.0f} П={margin_right:.0f})",
             f"  Ширина пропила:   {kerf:.1f} мм",
             f"  Всего изделий:    {total_pieces} шт.",
@@ -959,7 +960,7 @@ class CuttingApp:
             f"  Заготовок нужно:  {len(bins)} шт.  (уник. схем: {len(groups)})",
             f"  Общий расход:     {total_stock:.0f} мм",
             f"  Полезная длина:   {total_needed:.0f} мм",
-            f"  На пропилы:       {total_kerfs:.0f} мм",
+            f"  Пропилов:         {total_kerfs_count} шт. ({total_kerfs_mm:.0f} мм)",
             f"  На припуски:      {total_margins:.0f} мм",
             f"  Общий отход:      {total_waste:.0f} мм",
             f"  Эффективность:    {eff:.1f}%",
@@ -977,16 +978,42 @@ class CuttingApp:
             b = g["bin"]
             count = g["count"]
             indices = g["indices"]
-            parts_str = " + ".join(f"#{pid} {n}({l:.0f})" for n, l, pid in b["pieces"])
+
+            # Группируем одинаковые изделия внутри заготовки
+            piece_groups = []
+            for name, length, pid in b["pieces"]:
+                label = f"#{pid} {name}({length:.0f})" if name else f"#{pid}({length:.0f})"
+                if piece_groups and piece_groups[-1]["label"] == label:
+                    piece_groups[-1]["qty"] += 1
+                else:
+                    piece_groups.append({"label": label, "qty": 1})
+
+            parts_parts = []
+            for pg in piece_groups:
+                if pg["qty"] > 1:
+                    parts_parts.append(f"{pg['label']} ×{pg['qty']}шт")
+                else:
+                    parts_parts.append(pg["label"])
+            parts_str = " + ".join(parts_parts)
+
+            num_kerfs = max(0, len(b["pieces"]) - 1)
 
             if count > 1:
-                if len(indices) <= 4:
-                    idx_str = ", ".join(f"#{x}" for x in indices)
+                if indices[-1] - indices[0] + 1 == count:
+                    idx_str = f"#{indices[0]}-{indices[-1]}"
                 else:
-                    idx_str = f"#{indices[0]}–#{indices[-1]}"
-                lines.append(f"  ×{count} ({idx_str}): {parts_str}  →  остаток {b['remaining']:.0f} мм")
+                    idx_str = ", ".join(f"#{x}" for x in indices)
+                header = f"  Заготовка {idx_str} ({count} шт.):"
             else:
-                lines.append(f"  Заготовка #{indices[0]}: {parts_str}  →  остаток {b['remaining']:.0f} мм")
+                header = f"  Заготовка #{indices[0]}:"
+
+            detail = f"    {parts_str}"
+            footer = f"    → остаток {b['remaining']:.0f} мм, пропилов: {num_kerfs}"
+
+            lines.append(header)
+            lines.append(detail)
+            lines.append(footer)
+            lines.append("")
 
         self.report_text.delete("1.0", tk.END)
         self.report_text.insert("1.0", "\n".join(lines))
